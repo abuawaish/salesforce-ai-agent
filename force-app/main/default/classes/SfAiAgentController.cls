@@ -4,7 +4,7 @@
  * Author          : Abu Awaish
  * Created Date    : May 7, 2026
  * Last Modified By: Abu Awaish
- * Last Modified On: May 8, 2026
+ * Last Modified On: May 10, 2026
  * Description     : Enhanced SF AI Agent — native org queries + GPT-4 fallback
  * ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――
 */
@@ -561,34 +561,171 @@ public with sharing class SfAiAgentController {
     private static String executeSoqlAndFormat(String query) {
         try {
             String lower = query.trim().toLowerCase();
+
+            // COUNT query
             if (lower.startsWith('select count(')) {
                 Integer total = Database.countQuery(query);
                 return '## 📊 Count Result\n\n```soql\n' + query + '\n```\n\n**Total Records:** ' + total;
             }
+
+            // ── Detect if query contains a subquery ──────────────────────────────
+            Boolean hasSubquery = lower.contains('select id,') && lower.contains('from ') &&
+                                query.indexOf('(') > 0 && query.indexOf('(') < query.indexOf(')');
+
+            if (hasSubquery) {
+                return executeSubqueryAndFormat(query);
+            }
+
+            // ── Standard flat query ───────────────────────────────────────────────
             List<SObject> records = Database.query(query);
-            if (records.isEmpty())
+            if (records.isEmpty()) {
                 return '## 🔍 No Records Found\n\n```soql\n' + query + '\n```\n\n*No records matched your criteria.*';
+            }
 
             List<String> lines = new List<String>();
             lines.add('## 📋 Query Results\n\n```soql\n' + query + '\n```\n');
+
             Map<String, Object> firstFields = records[0].getPopulatedFieldsAsMap();
             List<String> fieldNames = new List<String>(firstFields.keySet());
+
             Integer maxRows = Math.min(records.size(), 15);
             lines.add('**Showing ' + maxRows + ' of ' + records.size() + ' records**\n');
+
             String header = '| '; String sep = '|';
             for (String fn : fieldNames) { header += fn + ' | '; sep += '---|'; }
-            lines.add(header); lines.add(sep);
+            lines.add(header);
+            lines.add(sep);
+
             for (Integer i = 0; i < maxRows; i++) {
                 String row = '| ';
-                for (String fn : fieldNames) row += formatFieldValue(records[i].get(fn)) + ' | ';
+                for (String fn : fieldNames) {
+                    row += formatFieldValue(records[i].get(fn)) + ' | ';
+                }
                 lines.add(row);
             }
-            if (records.size() > maxRows) lines.add('\n*...and ' + (records.size()-maxRows) + ' more records*');
+
+            if (records.size() > maxRows)
+                lines.add('\n*...and ' + (records.size() - maxRows) + ' more records*');
+
             return String.join(lines, '\n');
+
         } catch (Exception e) {
             return '❌ **SOQL Error:** ' + e.getMessage() + '\n\n```soql\n' + query + '\n```';
         }
     }
+
+    // ── Handles parent queries that contain child subqueries ──────────────────────
+    private static String executeSubqueryAndFormat(String query) {
+        try {
+            List<SObject> parentRecords = Database.query(query);
+
+            if (parentRecords.isEmpty()) {
+                return '## 🔍 No Records Found\n\n```soql\n' + query + '\n```\n\n*No parent records matched.*';
+            }
+
+            List<String> lines = new List<String>();
+            lines.add('## 📋 Subquery Results\n\n```soql\n' + query + '\n```\n');
+            lines.add('**' + parentRecords.size() + ' parent record(s) found**\n');
+
+            for (SObject parent : parentRecords) {
+
+                // ── Parent fields ─────────────────────────────────────────────────
+                // Use getSObjectType fields map to know what was queried
+                String parentRow = '';
+                Map<String, Object> parentFieldMap = parent.getPopulatedFieldsAsMap();
+
+                for (String fn : parentFieldMap.keySet()) {
+                    Object val = parentFieldMap.get(fn);
+                    // Child subquery results are AggregateResult/List — skip
+                    if (fn == 'attributes') continue;
+                    try {
+                        if (val instanceof List<SObject>) continue;
+                        parentRow += '**' + fn + ':** `' + formatFieldValue(val) + '`   ';
+                    } catch (Exception skip) {
+                        continue;
+                    }
+                }
+                lines.add('### 🔹 Parent — ' + parentRow.trim());
+
+                // ── Child records ─────────────────────────────────────────────────
+                for (String fn : parentFieldMap.keySet()) {
+                    Object rawVal = parentFieldMap.get(fn);
+                    if (!(rawVal instanceof List<SObject>)) continue;
+
+                    List<SObject> children = (List<SObject>) rawVal;
+
+                    lines.add('\n**↳ ' + fn + '** — ' + children.size() + ' child record(s)\n');
+
+                    if (children.isEmpty()) {
+                        lines.add('*No child records found.*\n');
+                        continue;
+                    }
+
+                    // ── Extract child fields SAFELY ───────────────────────────────
+                    // getPopulatedFieldsAsMap() on child records can throw if Apex
+                    // tries to resolve fields not in the SELECT. We iterate keySet
+                    // and catch per-field instead.
+                    Set<String> childFieldSet = children[0].getPopulatedFieldsAsMap().keySet();
+                    List<String> childFields  = new List<String>();
+
+                    for (String cf : childFieldSet) {
+                        // Skip relationship/attributes meta keys
+                        if (cf == 'attributes') continue;
+                        try {
+                            // Probe the field on the first record — if it throws,
+                            // this field wasn't actually selected, skip it
+                            Object probe = children[0].get(cf);
+                            childFields.add(cf);
+                        } catch (SObjectException ex) {
+                            // field not queried — skip silently
+                        }
+                    }
+
+                    if (childFields.isEmpty()) {
+                        lines.add('*Could not read child fields.*\n');
+                        continue;
+                    }
+
+                    // Table header
+                    String hdr = '| '; String sep = '|';
+                    for (String cf : childFields) { hdr += cf + ' | '; sep += '---|'; }
+                    lines.add(hdr);
+                    lines.add(sep);
+
+                    // Table rows
+                    Integer maxChild = Math.min(children.size(), 15);
+                    for (Integer i = 0; i < maxChild; i++) {
+                        String row = '| ';
+                        for (String cf : childFields) {
+                            String cellVal = '';
+                            try {
+                                cellVal = formatFieldValue(children[i].get(cf));
+                            } catch (SObjectException ex) {
+                                cellVal = '—';
+                            }
+                            row += cellVal + ' | ';
+                        }
+                        lines.add(row);
+                    }
+
+                    if (children.size() > maxChild)
+                        lines.add('\n*...and ' + (children.size() - maxChild) + ' more*');
+
+                    lines.add('');
+                }
+
+                lines.add('\n---\n');
+            }
+
+            return String.join(lines, '\n');
+
+        } catch (Exception e) {
+            return '❌ **Subquery Error:** ' + e.getMessage()
+                + '\n\n```soql\n' + query + '\n```\n\n'
+                + '💡 **Tip:** Try running this directly in Developer Console → Query Editor.';
+        }
+    }
+
 
     // ── OpenAI helpers ────────────────────────────────────────────────────────────
     private static String generateSoqlQuery(String prompt) {
