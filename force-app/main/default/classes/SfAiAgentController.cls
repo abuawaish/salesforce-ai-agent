@@ -4,7 +4,7 @@
  * Author          : Abu Awaish
  * Created Date    : May 7, 2026
  * Last Modified By: Abu Awaish
- * Last Modified On: May 10, 2026
+ * Last Modified On: May 11, 2026
  * Description     : Enhanced SF AI Agent — native org queries + GPT-4 fallback
  * ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――
 */
@@ -76,9 +76,8 @@ public with sharing class SfAiAgentController {
             return getCurrentUserInfo();
         }
 
-        // ── Picklist VALUES for a specific field (needs Object.Field notation) ─────
-        // Must come BEFORE the generic picklist fields check
-        Boolean hasFieldNotation = lp.contains('.');  // e.g. Account.Industry
+        // ── Picklist VALUES for a specific field (needs Object.Field notation) ──────
+        Boolean hasFieldNotation = lp.contains('.');
         Boolean asksForValues    = lp.contains('value') || lp.contains('lov') ||
                                 lp.contains('option');
 
@@ -86,9 +85,7 @@ public with sharing class SfAiAgentController {
             return getPicklistValues(prompt);
         }
 
-        // ── Picklist FIELDS on an object (list all picklist fields) ───────────────
-        // Triggers on: "picklist fields on X", "all picklists on X",
-        //              "available picklists on X", "picklist on X"
+        // ── Picklist FIELDS on an object ──────────────────────────────────────────
         Boolean asksPicklistFields = lp.contains('picklist field') ||
                                     lp.contains('picklist on')    ||
                                     lp.contains('picklist in')    ||
@@ -103,42 +100,66 @@ public with sharing class SfAiAgentController {
             return getPicklistFields(prompt);
         }
 
-        // ── Object describe — ONLY when NOT asking about picklists ────────────────
-        Boolean asksDescribe = lp.contains('describe ')    ||
-                            lp.contains('fields of')    ||
-                            lp.contains('fields on')    ||
-                            lp.contains('field list')   ||
-                            lp.contains('object info')  ||
-                            lp.contains('schema of')    ||
-                            lp.contains('how many fields') ||
-                            lp.contains('show fields')  ||
-                            lp.contains('list fields')  ||
-                            lp.contains('all fields');
+        // ── Fields only ───────────────────────────────────────────────────────────
+        Boolean asksFieldsOnly = (lp.contains('field') || lp.contains('data type')) &&
+                                !lp.contains('child') && !lp.contains('relationship') &&
+                                !lp.contains('describe') && !lp.contains('picklist');
 
-        Boolean asksChildInfo = lp.contains('child object') ||
-                                lp.contains('child relationship');
+        if (asksFieldsOnly && containsObjectName(lp)) {
+            return getObjectFields(extractObjectName(prompt));
+        }
 
-        // ❌ Don't fire describeObject if the user is asking about picklists
+        // ── Children only ─────────────────────────────────────────────────────────
+        Boolean asksChildrenOnly = lp.contains('child object')       ||
+                                lp.contains('child relationship') ||
+                                lp.contains('children of')        ||
+                                lp.contains('related object');
+
+        if (asksChildrenOnly && containsObjectName(lp)) {
+            return getObjectChildren(extractObjectName(prompt));
+        }
+
+        // ── Full describe ─────────────────────────────────────────────────────────
+        Boolean asksFullDescribe = lp.contains('describe ')   ||
+                                lp.contains('object info') ||
+                                lp.contains('schema of')   ||
+                                lp.contains('full info');
+
         Boolean isPicklistRelated = lp.contains('picklist');
 
-        if (!isPicklistRelated && (asksDescribe || asksChildInfo) && containsObjectName(lp)) {
+        if (!isPicklistRelated && asksFullDescribe && containsObjectName(lp)) {
             return describeObject(extractObjectName(prompt));
         }
 
         // ── OWD ───────────────────────────────────────────────────────────────────
-        if (lp.contains('owd')             || lp.contains('org-wide')       ||
-            lp.contains('org wide')        || lp.contains('sharing default') ||
+        if (lp.contains('owd')             || lp.contains('org-wide')        ||
+            lp.contains('org wide')        || lp.contains('sharing default')  ||
             lp.contains('default sharing') || lp.contains('sharing setting')) {
             return getOwdSettings();
         }
 
-        // ── Permission sets (not groups) ──────────────────────────────────────────
-        if (lp.contains('permission set') && !lp.contains('group') &&
-            (lp.contains('list') || lp.contains('all') || lp.contains('show'))) {
-            return getPermissionSets();
+        // ── Permission Set — specific detail OR full list ─────────────────────────
+        if (lp.contains('permission set') && !lp.contains('group')) {
+
+            Boolean wantsSpecific = lp.contains('detail')   || lp.contains('info')    ||
+                                    lp.contains('named ')   || lp.contains('called ')  ||
+                                    lp.contains('equals')   || lp.contains(' = ')      ||
+                                    lp.contains('about ')   || lp.contains('specific') ||
+                                    lp.contains('show me')  || lp.contains('full');
+
+            Boolean hasQuotedName = lp.contains('"') || lp.contains('\'');
+
+            if (wantsSpecific || hasQuotedName) {
+                return getPermissionSetDetail(prompt);
+            }
+
+            if (lp.contains('list') || lp.contains('all') ||
+                lp.contains('show') || lp.contains('fetch')) {
+                return getPermissionSets();
+            }
         }
 
-        // ── Permission set groups ─────────────────────────────────────────────────
+        // ── Permission Set Groups ─────────────────────────────────────────────────
         if ((lp.contains('permission set group') || lp.contains('psg')) &&
             (lp.contains('list') || lp.contains('all') || lp.contains('show'))) {
             return getPermissionSetGroups();
@@ -194,8 +215,8 @@ public with sharing class SfAiAgentController {
         }
 
         // ── Active users ──────────────────────────────────────────────────────────
-        if ((lp.contains('all user') || lp.contains('list user') ||
-            lp.contains('show user') || lp.contains('active user')) &&
+        if ((lp.contains('all user')    || lp.contains('list user') ||
+            lp.contains('show user')   || lp.contains('active user')) &&
             !lp.contains('my')) {
             return getActiveUsers();
         }
@@ -221,38 +242,104 @@ public with sharing class SfAiAgentController {
              + '| **Org Name** | ' + UserInfo.getOrganizationName() + ' |';
     }
 
-    // ── Describe object ───────────────────────────────────────────────────────────
+    // ── Fields only ───────────────────────────────────────────────────────────────
+    private static String getObjectFields(String objectName) {
+        if (String.isBlank(objectName))
+            return '❌ Please specify an object. Example: "Show fields on Contact"';
+        try {
+            Schema.SObjectType sot = Schema.getGlobalDescribe().get(objectName);
+            if (sot == null) return '❌ Object `' + objectName + '` not found.';
+
+            Schema.DescribeSObjectResult dsr = sot.getDescribe();
+            Map<String, Schema.SObjectField> fields = dsr.fields.getMap();
+            List<String> fieldNames = new List<String>(fields.keySet());
+            fieldNames.sort();
+
+            String result = '## 🗂 `' + dsr.getLabel() + '` — Fields (' + fields.size() + ')\n\n'
+                        + '| # | Label | API Name | Type | Required |\n|---|---|---|---|---|\n';
+
+            Integer idx = 1;
+            for (String fn : fieldNames) {
+                Schema.DescribeFieldResult f = fields.get(fn).getDescribe();
+                result += '| ' + idx++
+                        + ' | ' + f.getLabel()
+                        + ' | `' + f.getName() + '`'
+                        + ' | ' + f.getType()
+                        + ' | ' + (f.isNillable() ? '' : '✅') + ' |\n';
+            }
+            return result;
+        } catch (Exception e) {
+            return '❌ Error: ' + e.getMessage();
+        }
+    }
+
+    // ── Child relationships only ───────────────────────────────────────────────────
+    private static String getObjectChildren(String objectName) {
+        if (String.isBlank(objectName))
+            return '❌ Please specify an object. Example: "Show child objects of Account"';
+        try {
+            Schema.SObjectType sot = Schema.getGlobalDescribe().get(objectName);
+            if (sot == null) return '❌ Object `' + objectName + '` not found.';
+
+            Schema.DescribeSObjectResult dsr = sot.getDescribe();
+            List<Schema.ChildRelationship> children = dsr.getChildRelationships();
+
+            String result = '## 🔗 `' + dsr.getLabel() + '` — Child Relationships (' + children.size() + ')\n\n'
+                        + '| # | Child Object | Relationship Name | Field |\n|---|---|---|---|\n';
+
+            Integer idx = 1;
+            for (Schema.ChildRelationship cr : children) {
+                if (cr.getRelationshipName() == null) continue;
+                result += '| ' + idx++
+                        + ' | `' + cr.getChildSObject().getDescribe().getName() + '`'
+                        + ' | ' + cr.getRelationshipName()
+                        + ' | `' + cr.getField().getDescribe().getName() + '` |\n';
+            }
+            return result;
+        } catch (Exception e) {
+            return '❌ Error: ' + e.getMessage();
+        }
+    }
+
+    // ── Full describe (fields + children) — only when explicitly asked ─────────────
     private static String describeObject(String objectName) {
         if (String.isBlank(objectName))
             return '❌ Could not detect an object name. Try: "describe Account"';
         try {
             Schema.SObjectType sot = Schema.getGlobalDescribe().get(objectName);
-            if (sot == null) return '❌ Object **' + objectName + '** not found.';
+            if (sot == null) return '❌ Object `' + objectName + '` not found.';
 
             Schema.DescribeSObjectResult dsr = sot.getDescribe();
             Map<String, Schema.SObjectField> fields = dsr.fields.getMap();
             List<Schema.ChildRelationship> children = dsr.getChildRelationships();
 
             String result = '## 🗂 `' + dsr.getLabel() + '` (`' + dsr.getName() + '`)\n\n'
-                          + '**Fields:** ' + fields.size() + '  ·  **Child Relationships:** ' + children.size() + '\n\n'
-                          + '### Fields\n\n'
-                          + '| Label | API Name | Type | Required |\n|---|---|---|---|\n';
+                        + '**Total Fields:** ' + fields.size()
+                        + '  ·  **Child Relationships:** ' + children.size() + '\n\n'
+                        + '### Fields\n\n'
+                        + '| # | Label | API Name | Type | Required |\n|---|---|---|---|---|\n';
 
-            Integer shown = 0;
-            for (String fn : fields.keySet()) {
+            List<String> fieldNames = new List<String>(fields.keySet());
+            fieldNames.sort();
+            Integer idx = 1;
+            for (String fn : fieldNames) {
                 Schema.DescribeFieldResult f = fields.get(fn).getDescribe();
-                result += '| ' + f.getLabel() + ' | `' + f.getName() + '` | ' + f.getType() + ' | ' + (f.isNillable() ? '' : '✅') + ' |\n';
-                if (++shown >= 30) { result += '| ... | *(' + (fields.size()-30) + ' more fields)* | | |\n'; break; }
+                result += '| ' + idx++
+                        + ' | ' + f.getLabel()
+                        + ' | `' + f.getName() + '`'
+                        + ' | ' + f.getType()
+                        + ' | ' + (f.isNillable() ? '' : '✅') + ' |\n';
             }
 
-            if (!children.isEmpty()) {
-                result += '\n### Child Relationships\n\n| Child Object | Relationship Name | Field |\n|---|---|---|\n';
-                Integer cs = 0;
-                for (Schema.ChildRelationship cr : children) {
-                    if (cr.getRelationshipName() == null) continue;
-                    result += '| `' + cr.getChildSObject().getDescribe().getName() + '` | ' + cr.getRelationshipName() + ' | `' + cr.getField().getDescribe().getName() + '` |\n';
-                    if (++cs >= 20) { result += '\n*...and more*'; break; }
-                }
+            result += '\n### Child Relationships\n\n'
+                    + '| # | Child Object | Relationship Name | Field |\n|---|---|---|---|\n';
+            Integer ci = 1;
+            for (Schema.ChildRelationship cr : children) {
+                if (cr.getRelationshipName() == null) continue;
+                result += '| ' + ci++
+                        + ' | `' + cr.getChildSObject().getDescribe().getName() + '`'
+                        + ' | ' + cr.getRelationshipName()
+                        + ' | `' + cr.getField().getDescribe().getName() + '` |\n';
             }
             return result;
         } catch (Exception e) {
@@ -326,6 +413,112 @@ public with sharing class SfAiAgentController {
         for (PermissionSetGroup g : psg)
             result += '| **' + g.MasterLabel + '** | `' + g.DeveloperName + '` | ' + g.Status + ' |\n';
         return result;
+    }
+
+    // ── Single Permission Set detail by name ──────────────────────────────────────
+    private static String getPermissionSetDetail(String prompt) {
+        try {
+            // Extract the name from the prompt
+            // Handles: "name equals X", "named X", "called X", "name = X", "label X"
+            String searchName = extractQuotedOrKeywordValue(prompt);
+
+            if (String.isBlank(searchName)) {
+                return '❌ Please specify a permission set name. Example:\n'
+                    + '"Show details of permission set SF AI Agent User"';
+            }
+
+            // Search by Label (partial, case-insensitive) OR Name
+            List<PermissionSet> results = [
+                SELECT Id, Label, Name, IsCustom, Description,
+                    CreatedDate, LastModifiedDate,
+                    CreatedBy.Name, LastModifiedBy.Name,
+                    PermissionsApiEnabled, PermissionsAuthorApex,
+                    PermissionsCustomizeApplication, PermissionsManageUsers,
+                    PermissionsModifyAllData, PermissionsViewAllData,
+                    License.Name
+                FROM PermissionSet
+                WHERE IsOwnedByProfile = false
+                AND (Label LIKE :('%' + searchName + '%')
+                OR Name  LIKE :('%' + searchName + '%'))
+                ORDER BY Label
+                LIMIT 5
+            ];
+
+            if (results.isEmpty()) {
+                return '❌ No permission set found matching **"' + searchName + '"**.\n\n'
+                    + 'Try: "List all permission sets" to see what\'s available.';
+            }
+
+            // If multiple matches, show a picker table
+            if (results.size() > 1) {
+                String table = '## 🛡 Multiple Matches for "' + searchName + '"\n\n'
+                            + '| Label | API Name | Custom |\n|---|---|---|\n';
+                for (PermissionSet p : results) {
+                    table += '| **' + p.Label + '** | `' + p.Name + '` | ' + (p.IsCustom ? '✅' : '—') + ' |\n';
+                }
+                table += '\n> Be more specific, e.g. "Show details of permission set ' + results[0].Label + '"';
+                return table;
+            }
+
+            // Single match — show full detail card
+            PermissionSet ps = results[0];
+
+            String result = '## 🛡 Permission Set Detail\n\n'
+                        + '| Field | Value |\n|---|---|\n'
+                        + '| **Label** | ' + ps.Label + ' |\n'
+                        + '| **API Name** | `' + ps.Name + '` |\n'
+                        + '| **Custom** | ' + (ps.IsCustom ? '✅ Yes' : '— No') + ' |\n'
+                        + '| **Description** | ' + (String.isNotBlank(ps.Description) ? ps.Description : '—') + ' |\n'
+                        + '| **License** | ' + (ps.License != null ? ps.License.Name : '—') + ' |\n'
+                        + '| **Created Date** | ' + String.valueOf(ps.CreatedDate).substring(0,10) + ' |\n'
+                        + '| **Created By** | ' + (ps.CreatedBy != null ? ps.CreatedBy.Name : '—') + ' |\n'
+                        + '| **Last Modified** | ' + String.valueOf(ps.LastModifiedDate).substring(0,10) + ' |\n'
+                        + '| **Last Modified By** | ' + (ps.LastModifiedBy != null ? ps.LastModifiedBy.Name : '—') + ' |\n'
+                        + '| **Record ID** | `' + ps.Id + '` |\n\n'
+                        + '### Key Permissions\n\n'
+                        + '| Permission | Enabled |\n|---|---|\n'
+                        + '| API Enabled | '                  + (ps.PermissionsApiEnabled            ? '✅' : '❌') + ' |\n'
+                        + '| Author Apex | '                  + (ps.PermissionsAuthorApex             ? '✅' : '❌') + ' |\n'
+                        + '| Customize Application | '        + (ps.PermissionsCustomizeApplication   ? '✅' : '❌') + ' |\n'
+                        + '| Manage Users | '                 + (ps.PermissionsManageUsers            ? '✅' : '❌') + ' |\n'
+                        + '| Modify All Data | '              + (ps.PermissionsModifyAllData          ? '✅' : '❌') + ' |\n'
+                        + '| View All Data | '                + (ps.PermissionsViewAllData            ? '✅' : '❌') + ' |\n';
+
+            return result;
+
+        } catch (Exception e) {
+            return '❌ Error fetching permission set: ' + e.getMessage();
+        }
+    }
+
+    // ── Utility: extract value after keywords like "named", "called", "equals", "=" ──
+    private static String extractQuotedOrKeywordValue(String prompt) {
+        // Try quoted value first — "SF AI Agent User" or 'SF AI Agent User'
+        Pattern quoted = Pattern.compile('["\']([^"\']+)["\']');
+        Matcher qm = quoted.matcher(prompt);
+        if (qm.find()) return qm.group(1).trim();
+
+        // Try keyword patterns: "equals X", "named X", "called X", "name = X", "label X"
+        String lp = prompt.toLowerCase();
+        List<String> keywords = new List<String>{
+            'name equals ', 'name = ', 'named ', 'called ',
+            'label equals ', 'label = ', 'detail of ', 'details of ',
+            'detail for ', 'details for ', 'full detail of ',
+            'full details of ', 'info on ', 'info about ',
+            'about ', 'for '
+        };
+
+        for (String kw : keywords) {
+            Integer idx = lp.indexOf(kw);
+            if (idx >= 0) {
+                String remainder = prompt.substring(idx + kw.length()).trim();
+                // Take up to end or next punctuation
+                remainder = remainder.replaceAll('[?!.]$', '').trim();
+                if (String.isNotBlank(remainder)) return remainder;
+            }
+        }
+
+        return null;
     }
 
     // ── Profiles ──────────────────────────────────────────────────────────────────
