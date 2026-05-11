@@ -417,3 +417,60 @@
     justify-content: center;
     gap: 4px;
 }
+
+/* ── Scrollable large responses ──────────────────────────────────────────────── */
+.bubble.ai {
+    max-height: 420px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    scrollbar-width: thin;
+    scrollbar-color: #c8d4e8 transparent;
+}
+
+.bubble.ai::-webkit-scrollbar {
+    width: 5px;
+}
+
+.bubble.ai::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.bubble.ai::-webkit-scrollbar-thumb {
+    background: #c8d4e8;
+    border-radius: 10px;
+}
+
+.bubble.ai::-webkit-scrollbar-thumb:hover {
+    background: #a0b4d0;
+}
+
+/* ── Scrollable tables inside bubbles ────────────────────────────────────────── */
+.agent-table-wrapper {
+    width: 100%;
+    overflow-x: auto;
+    overflow-y: auto;
+    max-height: 360px;
+    border-radius: 8px;
+    border: 1px solid #d8dde6;
+    scrollbar-width: thin;
+    scrollbar-color: #c8d4e8 transparent;
+}
+
+.agent-table-wrapper::-webkit-scrollbar {
+    width: 5px;
+    height: 5px;
+}
+
+.agent-table-wrapper::-webkit-scrollbar-thumb {
+    background: #c8d4e8;
+    border-radius: 10px;
+}
+
+/* Sticky table header so column names stay visible while scrolling */
+.agent-table thead th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: #f4f6fb;
+    box-shadow: 0 1px 0 #d8dde6;
+}
