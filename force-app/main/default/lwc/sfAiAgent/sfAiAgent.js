@@ -10,31 +10,36 @@ export default class SfAiAgent extends LightningElement {
 
     // SVG path data for each icon (Material / custom paths)
     quickActions = [
-        { id: 'q1', label: 'Fetch records',
-        svg: 'M3 3h18v4H3zm0 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z',
-        prompt: 'Show me all Account records with Name, Industry and AnnualRevenue, limit 10' },
-
-        // ✅ Full describe — explicitly says "describe"
-        { id: 'q2', label: 'Object metadata',
-        svg: 'M12 2a10 10 0 1 0 0 20A10 10 0 0 0 12 2zm1 15h-2v-6h2zm0-8h-2V7h2z',
-        prompt: 'Describe the Account object — full schema with all fields and child relationships' },
-
-        // ✅ Child only
-        { id: 'q3', label: 'Child records',
-        svg: 'M17 12h-5v5h5v-5zM16 1v2H8V1H6v2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2h-1V1h-2zm3 18H5V8h14v11z',
-        prompt: 'Show all child objects and relationships of the Account object' },
-
-        { id: 'q4', label: 'Apex trigger',
-        svg: 'M9.4 16.6L4.8 12l4.6-4.6L8 6l-6 6 6 6 1.4-1.4zm5.2 0l4.6-4.6-4.6-4.6L16 6l6 6-6 6-1.4-1.4z',
-        prompt: 'Write an Apex trigger on Opportunity that fires on insert and update, fully bulkified' },
-
-        { id: 'q5', label: 'LWC component',
-        svg: 'M4 6h16v2H4zm0 5h16v2H4zm0 5h16v2H4z',
-        prompt: 'Create an LWC that shows a list of Accounts using @wire with toast notification' },
-
-        { id: 'q6', label: 'SOQL query',
-        svg: 'M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z',
-        prompt: 'Write SOQL to get all Contacts in the Technology industry with more than 500 employees' },
+        {
+            id: 'q1', label: 'Fetch records',
+            svg: 'M3 3h18v4H3zm0 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z',
+            prompt: 'Show me all Account records with Name, Industry and AnnualRevenue, limit 10'
+        },
+        {
+            id: 'q2', label: 'Object metadata',
+            svg: 'M12 2a10 10 0 1 0 0 20A10 10 0 0 0 12 2zm1 15h-2v-6h2zm0-8h-2V7h2z',
+            prompt: 'Show all fields on the Account object with their data types'
+        },
+        {
+            id: 'q3', label: 'Child records',
+            svg: 'M17 12h-5v5h5v-5zM16 1v2H8V1H6v2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2h-1V1h-2zm3 18H5V8h14v11z',
+            prompt: 'Show all child objects of the Account object'
+        },
+        {
+            id: 'q4', label: 'Apex trigger',
+            svg: 'M9.4 16.6L4.8 12l4.6-4.6L8 6l-6 6 6 6 1.4-1.4zm5.2 0l4.6-4.6-4.6-4.6L16 6l6 6-6 6-1.4-1.4z',
+            prompt: 'Write an Apex trigger on Opportunity that fires on insert and update, fully bulkified'
+        },
+        {
+            id: 'q5', label: 'LWC component',
+            svg: 'M4 6h16v2H4zm0 5h16v2H4zm0 5h16v2H4z',
+            prompt: 'Create an LWC that shows a list of Accounts using @wire with toast notification'
+        },
+        {
+            id: 'q6', label: 'SOQL query',
+            svg: 'M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z',
+            prompt: 'Write SOQL to get all Contacts in the Technology industry with more than 500 employees'
+        }
     ];
 
     orgActions = [
@@ -70,13 +75,13 @@ export default class SfAiAgent extends LightningElement {
         }
     ];
 
-    chips = [ // ✅ Changed — now asks for fields only, not full describe
-        { id: 'c1', label: '👤 My User Info',      prompt: 'Who am I? Show my user info' },
-        { id: 'c2', label: '📋 Account fields',    prompt: 'Show all fields on the Account object with their data types' },
-        { id: 'c3', label: '🎨 Picklist fields',   prompt: 'Show all picklist fields on Account object' },
-        { id: 'c4', label: '🏢 User roles',        prompt: 'Show all user roles in this org' },
-        { id: 'c5', label: '✅ Validation rules',  prompt: 'Show validation rules for Account' },
-        { id: 'c6', label: '📦 Apex classes',      prompt: 'List all Apex classes in this org' },
+    chips = [
+        { id: 'c1', label: '👤 My User Info',          prompt: 'Who am I? Show my user info' },
+        { id: 'c2', label: '📋 Opportunity fields',    prompt: 'Show all fields on the Opportunity object with their data types' },
+        { id: 'c3', label: '🎨 Picklist fields',       prompt: 'Show all picklist fields on Account object' },
+        { id: 'c4', label: '🏢 User roles',            prompt: 'Show all user roles in this org' },
+        { id: 'c5', label: '✅ Validation rules',      prompt: 'Show validation rules for Account' },
+        { id: 'c6', label: '📦 Apex classes',          prompt: 'List all Apex classes in this org' },
     ];
 
     get isSendDisabled() { return this.isThinking || !this.inputText.trim(); }
