@@ -330,4 +330,4 @@ MIT License — free to use, modify, and distribute. See [LICENSE](./LICENSE) fo
 
 Give it a ⭐ on GitHub — it helps others discover the project!
 
-Drop a comment on my [LinkedIn post](#) if you want to share how you're using it.
+Drop a comment on my [LinkedIn post](https://www.linkedin.com/feed/update/urn:li:activity:7458878322316447744/) if you want to share how you're using it.
