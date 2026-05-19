@@ -1,32 +1,20 @@
-/**
+/*
  * ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――
  * Class Name      : SfAiAgentController
  * Author          : Abu Awaish
  * Created Date    : May 7, 2026
  * Last Modified By: Abu Awaish
- * Last Modified On: May 17, 2026
+ * Last Modified On: May 19, 2026
  * Description     : SF AI Agent — intent-aware routing, native org queries,
- *                   dynamic SOQL execution, OpenAI GPT-4 fallback
+ *                   dynamic SOQL execution, OpenAI GPT-4 fallback.
+ *                   Supports: object metadata, fields, children, picklists,
+ *                   permission sets, profiles, roles, users, flows, apex classes,
+ *                   record types, OWD, installed packages, custom objects.
  *
- * Change History  :
- *  Date          │ Author      │ Change
- * ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――
- *  May 07, 2026  │ Abu Awaish  │ Initial version
- *  May 08, 2026  │ Abu Awaish  │ Fixed Named Credential auth bug
- *  May 09, 2026  │ Abu Awaish  │ Added intent detection + native org handlers
- *  May 10, 2026  │ Abu Awaish  │ Fixed OWD + ValidationRule compile errors
- *  May 11, 2026  │ Abu Awaish  │ Added subquery support + field access fix
- *  May 12, 2026  │ Abu Awaish  │ Split describeObject into focused methods
- *  May 13, 2026  │ Abu Awaish  │ Added PS/PSG/ApexClass/Flow/Profile detail
- *  May 14, 2026  │ Abu Awaish  │ Fixed record fetch routing, dynamic SOQL
- *  May 15, 2026  │ Abu Awaish  │ Fixed FlowDefinitionView OR query, null guards
- *  May 16, 2026  │ Abu Awaish  │ Tooling API guard, all records display
- *  May 17, 2026  │ Abu Awaish  │ Added Role/User/RecordType detail, wantsSpecificRecord
- * ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――
  */
 public with sharing class SfAiAgentController {
 
-    // ── Tooling API objects — cannot be queried via Database.query() ──────────
+    // ── Tooling API objects — cannot be queried via Database.query() ───────────
     private static final Set<String> TOOLING_ONLY_OBJECTS = new Set<String>{
         'validationrule', 'workflowrule', 'workflowalert', 'workflowfieldupdate',
         'workflowtask', 'workflowsend', 'workflowoutboundmessage',
@@ -45,7 +33,7 @@ public with sharing class SfAiAgentController {
                 throw new AuraHandledException('Prompt cannot be empty.');
             }
 
-            // 1. Code/explanation requests → straight to GPT
+            // 1. Code/explanation → GPT
             if (isCodeOrExplanationRequest(prompt)) {
                 return callOpenAIChat(prompt);
             }
@@ -54,7 +42,7 @@ public with sharing class SfAiAgentController {
             String nativeResult = tryNativeOrgHandler(prompt);
             if (nativeResult != null) return nativeResult;
 
-            // 3. Ask GPT to generate SOQL, then execute
+            // 3. GPT generates SOQL → execute
             String soql = generateSoqlQuery(prompt);
             if (isValidSelectQuery(soql)) {
                 return executeSoqlAndFormat(soql);
@@ -77,36 +65,33 @@ public with sharing class SfAiAgentController {
 
     private static Boolean isCodeOrExplanationRequest(String prompt) {
         String lp = prompt.toLowerCase();
-        if (lp.contains('write apex')          || lp.contains('create apex')      ||
-            lp.contains('write a trigger')     || lp.contains('write trigger')    ||
-            lp.contains('create trigger')      || lp.contains('write lwc')        ||
-            lp.contains('create lwc')          || lp.contains('lwc component')    ||
-            lp.contains('how to ')             || lp.contains('how do i')         ||
-            lp.contains('how does')            || lp.contains('explain ')         ||
-            lp.contains('what is ')            || lp.contains('what are ')        ||
-            lp.contains('difference between')  || lp.contains('best practice')    ||
-            lp.contains('example of')          || lp.contains('syntax for')       ||
-            lp.contains('write soql')          || lp.contains('give me soql')     ||
-            lp.contains('only soql')           || lp.contains('generate soql')    ||
-            lp.contains('soql for ')           || lp.contains('soql to ')         ||
-            lp.contains('soql query')          || lp.contains('show me soql')     ||
-            lp.contains('show me a soql')      || lp.contains('generate a soql')  ||
-            lp.contains('create a soql')       || lp.contains('get soql')         ||
-            lp.contains('need soql')) {
-            return true;
-        }
-        return false;
+        return lp.contains('write apex')          || lp.contains('create apex')       ||
+               lp.contains('write a trigger')     || lp.contains('write trigger')     ||
+               lp.contains('create trigger')      || lp.contains('write lwc')         ||
+               lp.contains('create lwc')          || lp.contains('lwc component')     ||
+               lp.contains('how to ')             || lp.contains('how do i')          ||
+               lp.contains('how does')            || lp.contains('explain ')          ||
+               lp.contains('what is ')            || lp.contains('what are ')         ||
+               lp.contains('difference between')  || lp.contains('best practice')     ||
+               lp.contains('example of')          || lp.contains('syntax for')        ||
+               lp.contains('write soql')          || lp.contains('give me soql')      ||
+               lp.contains('only soql')           || lp.contains('generate soql')     ||
+               lp.contains('soql for ')           || lp.contains('soql to ')          ||
+               lp.contains('soql query')          || lp.contains('show me soql')      ||
+               lp.contains('show me a soql')      || lp.contains('generate a soql')   ||
+               lp.contains('create a soql')       || lp.contains('get soql')          ||
+               lp.contains('need soql');
     }
 
-    // ── Reusable: does prompt want a single specific record? ──────────────────
+    // ── Does the prompt want ONE specific record? ─────────────────────────────
     private static Boolean wantsSpecificRecord(String lp) {
-        return lp.contains('detail')            || lp.contains('named ')          ||
-               lp.contains('called ')           || lp.contains('equals')          ||
-               lp.contains(' = ')               || lp.contains('about ')          ||
-               lp.contains('specific')          || lp.contains('full')            ||
-               lp.contains('whose name')        || lp.contains('info about')      ||
-               lp.contains('information about') || lp.contains('tell me about')   ||
-               lp.contains('show me info')      || lp.contains('"')               ||
+        return lp.contains('detail')            || lp.contains('named ')           ||
+               lp.contains('called ')           || lp.contains('equals')           ||
+               lp.contains(' = ')               || lp.contains('about ')           ||
+               lp.contains('specific')          || lp.contains('full')             ||
+               lp.contains('whose name')        || lp.contains('info about')       ||
+               lp.contains('information about') || lp.contains('tell me about')    ||
+               lp.contains('show me info')      || lp.contains('"')                ||
                lp.contains('\'');
     }
 
@@ -117,7 +102,7 @@ public with sharing class SfAiAgentController {
     private static String tryNativeOrgHandler(String prompt) {
         String lp = prompt.toLowerCase();
 
-        // ── PRIORITY 1 — Record/data fetch → let SOQL generator handle ────────
+        // ── PRIORITY 1 — Record/data fetch → SOQL generator ───────────────────
         Boolean isRecordFetch =
             lp.contains('top ')           || lp.contains('fetch ')        ||
             lp.contains('get me ')        || lp.contains('get top')       ||
@@ -127,10 +112,9 @@ public with sharing class SfAiAgentController {
             lp.contains('one record')     || lp.contains('records of')    ||
             lp.contains('records from')   || lp.contains('records with')  ||
             (lp.contains('show me ') && lp.contains('record'));
-
         if (isRecordFetch) return null;
 
-        // ── PRIORITY 2 — User info ─────────────────────────────────────────────
+        // ── PRIORITY 2 — Current user info ────────────────────────────────────
         if (lp.contains('my username')   || lp.contains('who am i')      ||
             lp.contains('my email')      || lp.contains('my name')       ||
             lp.contains('current user')  || lp.contains('my user info')  ||
@@ -138,45 +122,38 @@ public with sharing class SfAiAgentController {
             return getCurrentUserInfo();
         }
 
-        // ── PRIORITY 3 — Picklist VALUES (specific field, dot notation) ────────
-        Boolean hasFieldNotation = lp.contains('.');
-        Boolean asksForValues    = lp.contains('value') || lp.contains('lov') ||
-                                   lp.contains('option');
-        if (hasFieldNotation && asksForValues && containsObjectName(lp)) {
+        // ── PRIORITY 3 — Picklist VALUES (dot notation) ───────────────────────
+        if (lp.contains('.') &&
+            (lp.contains('value') || lp.contains('lov') || lp.contains('option')) &&
+            containsObjectName(lp)) {
             return getPicklistValues(prompt);
         }
 
-        // ── PRIORITY 4 — Picklist FIELDS list on object ────────────────────────
+        // ── PRIORITY 4 — Picklist FIELDS on object ────────────────────────────
         Boolean asksPicklistFields =
-            lp.contains('picklist field')      || lp.contains('picklist on')   ||
-            lp.contains('picklist in')         || lp.contains('picklists on')  ||
-            lp.contains('picklists in')        || lp.contains('all picklist')  ||
-            lp.contains('available picklist')  || lp.contains('show picklist') ||
+            lp.contains('picklist field')     || lp.contains('picklist on')    ||
+            lp.contains('picklist in')        || lp.contains('picklists on')   ||
+            lp.contains('picklists in')       || lp.contains('all picklist')   ||
+            lp.contains('available picklist') || lp.contains('show picklist')  ||
             lp.contains('list picklist');
-
         if (asksPicklistFields && containsObjectName(lp)) {
             return getPicklistFields(prompt);
         }
 
         // ── PRIORITY 5 — Children only ─────────────────────────────────────────
-        Boolean asksChildrenOnly =
-            lp.contains('child object')        ||
-            lp.contains('child relationship')  ||
-            lp.contains('children of')         ||
-            lp.contains('related object');
-
-        if (asksChildrenOnly && containsObjectName(lp)) {
+        if ((lp.contains('child object')       ||
+             lp.contains('child relationship') ||
+             lp.contains('children of')        ||
+             lp.contains('related object')) && containsObjectName(lp)) {
             return getObjectChildren(extractObjectName(prompt));
         }
 
-        // ── PRIORITY 6 — Full describe (fields + children together) ───────────
+        // ── PRIORITY 6 — Full describe (fields + children) ────────────────────
         Boolean asksFullDescribe =
             lp.contains('describe ')    || lp.contains('full schema') ||
             lp.contains('object info')  || lp.contains('schema of')  ||
             lp.contains('full info');
-        Boolean isPicklistRelated = lp.contains('picklist');
-
-        if (!isPicklistRelated && asksFullDescribe && containsObjectName(lp)) {
+        if (!lp.contains('picklist') && asksFullDescribe && containsObjectName(lp)) {
             return describeObject(extractObjectName(prompt));
         }
 
@@ -191,14 +168,10 @@ public with sharing class SfAiAgentController {
              lp.contains('fields of the')      ||
              lp.contains('fields on the')      ||
              lp.contains('data types'))
-            && !lp.contains('record')
-            && !lp.contains('fetch')
-            && !lp.contains('get me')
-            && !lp.contains('retrieve')
-            && !lp.contains('picklist')
-            && !lp.contains('child')
+            && !lp.contains('record')   && !lp.contains('fetch')
+            && !lp.contains('get me')   && !lp.contains('retrieve')
+            && !lp.contains('picklist') && !lp.contains('child')
             && !lp.contains('relationship');
-
         if (asksFieldsOnly && containsObjectName(lp)) {
             return getObjectFields(extractObjectName(prompt));
         }
@@ -232,17 +205,17 @@ public with sharing class SfAiAgentController {
                 return getProfiles();
         }
 
-        // ── PRIORITY 12 — Role detail OR list ────────────────────────────────
+        // ── PRIORITY 12 — User Role detail OR list ────────────────────────────
         if (lp.contains('user role') || lp.contains('user roles') ||
-            lp.contains('all roles') || lp.contains('list roles')  ||
-            lp.contains('show roles')|| lp.contains('role whose')  ||
-            lp.contains('role named')|| lp.contains('role called') ||
-            lp.contains('role detail')|| lp.contains('role information')) {
-
+            lp.contains('all roles') || lp.contains('list roles') ||
+            lp.contains('show roles') ||
+            (lp.contains('role') && (lp.contains('detail') || lp.contains('whose') ||
+             lp.contains('named')    || lp.contains('called') ||
+             lp.contains('information')))) {
             if (wantsSpecificRecord(lp) && !lp.contains('my'))
                 return getUserRoleDetail(prompt);
-            if ((lp.contains('list') || lp.contains('all') || lp.contains('show'))
-                && !lp.contains('my'))
+            if ((lp.contains('list') || lp.contains('all') || lp.contains('show')) &&
+                !lp.contains('my'))
                 return getUserRoles();
         }
 
@@ -264,7 +237,7 @@ public with sharing class SfAiAgentController {
                 return getFlows();
         }
 
-        // ── PRIORITY 16 — Apex class detail OR list ───────────────────────────
+        // ── PRIORITY 16 — Apex Class detail OR list ───────────────────────────
         if (lp.contains('apex class') || lp.contains('apex classes')) {
             if (wantsSpecificRecord(lp)) return getApexClassDetail(prompt);
             if (lp.contains('list') || lp.contains('all') || lp.contains('show'))
@@ -278,7 +251,7 @@ public with sharing class SfAiAgentController {
             return getValidationRules(prompt);
         }
 
-        // ── PRIORITY 18 — Record type detail OR list ──────────────────────────
+        // ── PRIORITY 18 — Record Type detail OR list ──────────────────────────
         if (lp.contains('record type')) {
             if (wantsSpecificRecord(lp)) return getRecordTypeDetail(prompt);
             if (lp.contains('list') || lp.contains('show') || lp.contains('all') ||
@@ -290,8 +263,8 @@ public with sharing class SfAiAgentController {
         if (lp.contains('user') && !lp.contains('my') &&
             !lp.contains('user role') && !lp.contains('username')) {
             if (wantsSpecificRecord(lp)) return getUserDetail(prompt);
-            if (lp.contains('all user')  || lp.contains('list user') ||
-                lp.contains('show user') || lp.contains('active user'))
+            if (lp.contains('all user')   || lp.contains('list user') ||
+                lp.contains('show user')  || lp.contains('active user'))
                 return getActiveUsers();
         }
 
@@ -302,7 +275,7 @@ public with sharing class SfAiAgentController {
     // ORG DATA METHODS
     // ══════════════════════════════════════════════════════════════════════════
 
-    // ── Current user info ─────────────────────────────────────────────────────
+    // ── Current user ──────────────────────────────────────────────────────────
     private static String getCurrentUserInfo() {
         User u = [
             SELECT Id, Name, Username, Email, Profile.Name,
@@ -311,58 +284,51 @@ public with sharing class SfAiAgentController {
         ];
         return '## 👤 Your Salesforce User\n\n'
              + '| Field | Value |\n|---|---|\n'
-             + '| **Name** | '        + u.Name + ' |\n'
-             + '| **Username** | `'   + u.Username + '` |\n'
-             + '| **Email** | '       + u.Email + ' |\n'
-             + '| **Profile** | '     + (u.Profile  != null ? u.Profile.Name  : '—') + ' |\n'
-             + '| **Role** | '        + (u.UserRole != null ? u.UserRole.Name : '—') + ' |\n'
-             + '| **Last Login** | '  + (u.LastLoginDate != null
-                                         ? String.valueOf(u.LastLoginDate).substring(0,10)
-                                         : 'Never') + ' |\n'
-             + '| **Org ID** | `'     + UserInfo.getOrganizationId()   + '` |\n'
-             + '| **Org Name** | '    + UserInfo.getOrganizationName() + ' |';
+             + '| **Name** | '       + u.Name + ' |\n'
+             + '| **Username** | `'  + u.Username + '` |\n'
+             + '| **Email** | '      + u.Email + ' |\n'
+             + '| **Profile** | '    + (u.Profile  != null ? u.Profile.Name  : '—') + ' |\n'
+             + '| **Role** | '       + (u.UserRole != null ? u.UserRole.Name : '—') + ' |\n'
+             + '| **Last Login** | ' + (u.LastLoginDate != null
+                                        ? String.valueOf(u.LastLoginDate).substring(0,10)
+                                        : 'Never') + ' |\n'
+             + '| **Org ID** | `'    + UserInfo.getOrganizationId()   + '` |\n'
+             + '| **Org Name** | '   + UserInfo.getOrganizationName() + ' |';
     }
 
-    // ── Fields only ───────────────────────────────────────────────────────────
+    // ── Object fields only ────────────────────────────────────────────────────
     private static String getObjectFields(String objectName) {
         if (String.isBlank(objectName))
             return '❌ Please specify an object. Example: "Show fields on Contact"';
         try {
             Schema.SObjectType sot = Schema.getGlobalDescribe().get(objectName);
             if (sot == null) return '❌ Object `' + objectName + '` not found.';
-
             Schema.DescribeSObjectResult dsr = sot.getDescribe();
             Map<String, Schema.SObjectField> fields = dsr.fields.getMap();
-            List<String> fieldNames = new List<String>(fields.keySet());
-            fieldNames.sort();
-
+            List<String> fns = new List<String>(fields.keySet());
+            fns.sort();
             String result = '## 🗂 `' + dsr.getLabel() + '` — Fields (' + fields.size() + ')\n\n'
                           + '| # | Label | API Name | Type | Required |\n|---|---|---|---|---|\n';
             Integer idx = 1;
-            for (String fn : fieldNames) {
+            for (String fn : fns) {
                 Schema.DescribeFieldResult f = fields.get(fn).getDescribe();
                 result += '| ' + idx++ + ' | ' + f.getLabel()
-                        + ' | `' + f.getName() + '`'
-                        + ' | ' + f.getType()
+                        + ' | `' + f.getName() + '` | ' + f.getType()
                         + ' | ' + (f.isNillable() ? '' : '✅') + ' |\n';
             }
             return result;
-        } catch (Exception e) {
-            return '❌ Error: ' + e.getMessage();
-        }
+        } catch (Exception e) { return '❌ Error: ' + e.getMessage(); }
     }
 
-    // ── Child relationships only ───────────────────────────────────────────────
+    // ── Object child relationships only ───────────────────────────────────────
     private static String getObjectChildren(String objectName) {
         if (String.isBlank(objectName))
             return '❌ Please specify an object. Example: "Show child objects of Account"';
         try {
             Schema.SObjectType sot = Schema.getGlobalDescribe().get(objectName);
             if (sot == null) return '❌ Object `' + objectName + '` not found.';
-
             Schema.DescribeSObjectResult dsr = sot.getDescribe();
             List<Schema.ChildRelationship> children = dsr.getChildRelationships();
-
             String result = '## 🔗 `' + dsr.getLabel()
                           + '` — Child Relationships (' + children.size() + ')\n\n'
                           + '| # | Child Object | Relationship Name | Field |\n|---|---|---|---|\n';
@@ -375,9 +341,7 @@ public with sharing class SfAiAgentController {
                         + ' | `' + cr.getField().getDescribe().getName() + '` |\n';
             }
             return result;
-        } catch (Exception e) {
-            return '❌ Error: ' + e.getMessage();
-        }
+        } catch (Exception e) { return '❌ Error: ' + e.getMessage(); }
     }
 
     // ── Full describe (fields + children) ─────────────────────────────────────
@@ -387,28 +351,23 @@ public with sharing class SfAiAgentController {
         try {
             Schema.SObjectType sot = Schema.getGlobalDescribe().get(objectName);
             if (sot == null) return '❌ Object `' + objectName + '` not found.';
-
             Schema.DescribeSObjectResult dsr    = sot.getDescribe();
             Map<String, Schema.SObjectField> fields   = dsr.fields.getMap();
             List<Schema.ChildRelationship>   children = dsr.getChildRelationships();
-
             String result = '## 🗂 `' + dsr.getLabel() + '` (`' + dsr.getName() + '`)\n\n'
                           + '**Total Fields:** ' + fields.size()
                           + '  ·  **Child Relationships:** ' + children.size() + '\n\n'
                           + '### Fields\n\n'
                           + '| # | Label | API Name | Type | Required |\n|---|---|---|---|---|\n';
-
-            List<String> fieldNames = new List<String>(fields.keySet());
-            fieldNames.sort();
+            List<String> fns = new List<String>(fields.keySet());
+            fns.sort();
             Integer idx = 1;
-            for (String fn : fieldNames) {
+            for (String fn : fns) {
                 Schema.DescribeFieldResult f = fields.get(fn).getDescribe();
                 result += '| ' + idx++ + ' | ' + f.getLabel()
-                        + ' | `' + f.getName() + '`'
-                        + ' | ' + f.getType()
+                        + ' | `' + f.getName() + '` | ' + f.getType()
                         + ' | ' + (f.isNillable() ? '' : '✅') + ' |\n';
             }
-
             result += '\n### Child Relationships\n\n'
                     + '| # | Child Object | Relationship Name | Field |\n|---|---|---|---|\n';
             Integer ci = 1;
@@ -420,354 +379,301 @@ public with sharing class SfAiAgentController {
                         + ' | `' + cr.getField().getDescribe().getName() + '` |\n';
             }
             return result;
-        } catch (Exception e) {
-            return '❌ Error describing object: ' + e.getMessage();
-        }
+        } catch (Exception e) { return '❌ Error describing object: ' + e.getMessage(); }
     }
 
-    // ── OWD / Sharing info ────────────────────────────────────────────────────
+    // ── OWD / Sharing ─────────────────────────────────────────────────────────
     private static String getOwdSettings() {
         try {
-            List<String> objectsToCheck = new List<String>{
+            List<String> objs = new List<String>{
                 'Account','Contact','Opportunity','Lead','Case','Campaign',
                 'Contract','Order','Asset','Quote','Task','Event','Product2'
             };
             String result = '## 🔒 Object Sharing Info\n\n'
                           + '| Object | Queryable | Createable | Has Share Object |\n|---|---|---|---|\n';
-
             Map<String, Schema.SObjectType> gd = Schema.getGlobalDescribe();
-            for (String objName : objectsToCheck) {
-                Schema.SObjectType sot = gd.get(objName);
+            for (String o : objs) {
+                Schema.SObjectType sot = gd.get(o);
                 if (sot == null) continue;
                 Schema.DescribeSObjectResult dsr = sot.getDescribe();
-                Boolean hasShareObj = gd.containsKey(objName + 'Share');
-                result += '| `' + objName + '`'
+                result += '| `' + o + '`'
                         + ' | ' + (dsr.isQueryable()  ? '✅' : '❌')
                         + ' | ' + (dsr.isCreateable() ? '✅' : '❌')
-                        + ' | ' + (hasShareObj ? '✅ `' + objName + 'Share`' : '—') + ' |\n';
+                        + ' | ' + (gd.containsKey(o + 'Share') ? '✅ `' + o + 'Share`' : '—') + ' |\n';
             }
-
-            result += '\n> ℹ️ Full OWD values require Tooling API.\n'
-                    + 'Go to: **Setup → Sharing Settings**\n\n'
-                    + 'Or run in Developer Console with **Use Tooling API** checked:\n'
+            result += '\n> ℹ️ Full OWD values require Tooling API. Go to: **Setup → Sharing Settings**\n\n'
+                    + 'Or in Developer Console with **Use Tooling API** checked:\n'
                     + '```soql\nSELECT SobjectType, InternalSharingModel, ExternalSharingModel\n'
                     + 'FROM OrganizationWideDefault ORDER BY SobjectType\n```';
             return result;
-        } catch (Exception e) {
-            return '❌ Error: ' + e.getMessage();
-        }
+        } catch (Exception e) { return '❌ Error: ' + e.getMessage(); }
     }
 
-    // ── Permission Sets (list) ─────────────────────────────────────────────────
+    // ── Permission Sets (list) ────────────────────────────────────────────────
     private static String getPermissionSets() {
         List<PermissionSet> ps = [
-            SELECT Id, Label, Name, IsCustom, Description, CreatedDate
-            FROM PermissionSet
-            WHERE IsOwnedByProfile = false
-            ORDER BY Label LIMIT 50
+            SELECT Id, Label, Name, IsCustom, CreatedDate
+            FROM PermissionSet WHERE IsOwnedByProfile = false ORDER BY Label LIMIT 50
         ];
         if (ps.isEmpty()) return '📋 No custom permission sets found.';
-        String result = '## 🛡 Permission Sets (' + ps.size() + ')\n\n'
-                      + '| Label | API Name | Custom | Created |\n|---|---|---|---|\n';
+        String r = '## 🛡 Permission Sets (' + ps.size() + ')\n\n'
+                 + '| Label | API Name | Custom | Created |\n|---|---|---|---|\n';
         for (PermissionSet p : ps)
-            result += '| **' + p.Label + '** | `' + p.Name + '` | '
-                    + (p.IsCustom ? '✅' : '—') + ' | '
-                    + String.valueOf(p.CreatedDate).substring(0,10) + ' |\n';
-        return result;
+            r += '| **' + p.Label + '** | `' + p.Name + '` | '
+               + (p.IsCustom ? '✅' : '—') + ' | '
+               + String.valueOf(p.CreatedDate).substring(0,10) + ' |\n';
+        return r;
     }
 
-    // ── Permission Set (single detail) ────────────────────────────────────────
+    // ── Permission Set (detail) ───────────────────────────────────────────────
     private static String getPermissionSetDetail(String prompt) {
         try {
             String searchName = extractQuotedOrKeywordValue(prompt);
             if (String.isBlank(searchName))
                 return '❌ Please specify a name.\nExample: "Show details of permission set SF AI Agent User"';
 
-            List<PermissionSet> results = [
+            // Exact match first
+            List<PermissionSet> exact = [
                 SELECT Id, Label, Name, IsCustom, Description,
-                       CreatedDate, LastModifiedDate,
-                       CreatedBy.Name, LastModifiedBy.Name,
+                       CreatedDate, LastModifiedDate, CreatedBy.Name, LastModifiedBy.Name,
                        PermissionsApiEnabled, PermissionsAuthorApex,
                        PermissionsCustomizeApplication, PermissionsManageUsers,
-                       PermissionsModifyAllData, PermissionsViewAllData,
-                       License.Name
+                       PermissionsModifyAllData, PermissionsViewAllData, License.Name
+                FROM PermissionSet
+                WHERE IsOwnedByProfile = false AND Name = :searchName LIMIT 1
+            ];
+            if (!exact.isEmpty()) return formatPermissionSetDetail(exact[0]);
+
+            // LIKE partial
+            List<PermissionSet> partial = [
+                SELECT Id, Label, Name, IsCustom, Description,
+                       CreatedDate, LastModifiedDate, CreatedBy.Name, LastModifiedBy.Name,
+                       PermissionsApiEnabled, PermissionsAuthorApex,
+                       PermissionsCustomizeApplication, PermissionsManageUsers,
+                       PermissionsModifyAllData, PermissionsViewAllData, License.Name
                 FROM PermissionSet
                 WHERE IsOwnedByProfile = false
-                  AND (Label LIKE :('%' + searchName + '%')
-                   OR  Name  LIKE :('%' + searchName + '%'))
+                  AND (Label LIKE :('%' + searchName + '%') OR Name LIKE :('%' + searchName + '%'))
                 ORDER BY Label LIMIT 5
             ];
+            if (partial.isEmpty())
+                return '❌ No permission set found matching **"' + searchName + '"**.\n\nTry: "List all permission sets"';
+            if (partial.size() == 1) return formatPermissionSetDetail(partial[0]);
 
-            if (results.isEmpty())
-                return '❌ No permission set found matching **"' + searchName + '"**.\n\n'
-                     + 'Try: "List all permission sets" to see what\'s available.';
+            String t = '## 🛡 Multiple Matches for "' + searchName + '"\n\n| Label | API Name | Custom |\n|---|---|---|\n';
+            for (PermissionSet p : partial)
+                t += '| **' + p.Label + '** | `' + p.Name + '` | ' + (p.IsCustom ? '✅' : '—') + ' |\n';
+            return t + '\n> Be more specific, e.g. "details of permission set ' + partial[0].Label + '"';
+        } catch (Exception e) { return '❌ Error: ' + e.getMessage(); }
+    }
 
-            if (results.size() > 1) {
-                String table = '## 🛡 Multiple Matches for "' + searchName + '"\n\n'
-                             + '| Label | API Name | Custom |\n|---|---|---|\n';
-                for (PermissionSet p : results)
-                    table += '| **' + p.Label + '** | `' + p.Name + '` | '
-                           + (p.IsCustom ? '✅' : '—') + ' |\n';
-                table += '\n> Be more specific, e.g. "details of permission set '
-                       + results[0].Label + '"';
-                return table;
-            }
-
-            PermissionSet ps = results[0];
-            return '## 🛡 Permission Set Detail\n\n'
-                 + '| Field | Value |\n|---|---|\n'
-                 + '| **Label** | '            + ps.Label + ' |\n'
-                 + '| **API Name** | `'         + ps.Name + '` |\n'
-                 + '| **Custom** | '            + (ps.IsCustom ? '✅ Yes' : '— No') + ' |\n'
-                 + '| **Description** | '       + (String.isNotBlank(ps.Description) ? ps.Description : '—') + ' |\n'
-                 + '| **License** | '           + (ps.License != null ? ps.License.Name : '—') + ' |\n'
-                 + '| **Created Date** | '      + String.valueOf(ps.CreatedDate).substring(0,10) + ' |\n'
-                 + '| **Created By** | '        + (ps.CreatedBy != null ? ps.CreatedBy.Name : '—') + ' |\n'
-                 + '| **Last Modified** | '     + String.valueOf(ps.LastModifiedDate).substring(0,10) + ' |\n'
-                 + '| **Last Modified By** | '  + (ps.LastModifiedBy != null ? ps.LastModifiedBy.Name : '—') + ' |\n'
-                 + '| **Record ID** | `'         + ps.Id + '` |\n\n'
-                 + '### Key Permissions\n\n'
-                 + '| Permission | Enabled |\n|---|---|\n'
-                 + '| API Enabled | '               + (ps.PermissionsApiEnabled            ? '✅' : '❌') + ' |\n'
-                 + '| Author Apex | '               + (ps.PermissionsAuthorApex             ? '✅' : '❌') + ' |\n'
-                 + '| Customize Application | '     + (ps.PermissionsCustomizeApplication   ? '✅' : '❌') + ' |\n'
-                 + '| Manage Users | '              + (ps.PermissionsManageUsers            ? '✅' : '❌') + ' |\n'
-                 + '| Modify All Data | '           + (ps.PermissionsModifyAllData          ? '✅' : '❌') + ' |\n'
-                 + '| View All Data | '             + (ps.PermissionsViewAllData            ? '✅' : '❌') + ' |\n';
-
-        } catch (Exception e) {
-            return '❌ Error fetching permission set: ' + e.getMessage();
-        }
+    private static String formatPermissionSetDetail(PermissionSet ps) {
+        return '## 🛡 Permission Set Detail\n\n'
+             + '| Field | Value |\n|---|---|\n'
+             + '| **Label** | '            + ps.Label + ' |\n'
+             + '| **API Name** | `'         + ps.Name + '` |\n'
+             + '| **Custom** | '            + (ps.IsCustom ? '✅ Yes' : '— No') + ' |\n'
+             + '| **Description** | '       + (String.isNotBlank(ps.Description) ? ps.Description : '—') + ' |\n'
+             + '| **License** | '           + (ps.License != null ? ps.License.Name : '—') + ' |\n'
+             + '| **Created Date** | '      + String.valueOf(ps.CreatedDate).substring(0,10) + ' |\n'
+             + '| **Created By** | '        + (ps.CreatedBy != null ? ps.CreatedBy.Name : '—') + ' |\n'
+             + '| **Last Modified** | '     + String.valueOf(ps.LastModifiedDate).substring(0,10) + ' |\n'
+             + '| **Last Modified By** | '  + (ps.LastModifiedBy != null ? ps.LastModifiedBy.Name : '—') + ' |\n'
+             + '| **Record ID** | `'         + ps.Id + '` |\n\n'
+             + '### Key Permissions\n\n| Permission | Enabled |\n|---|---|\n'
+             + '| API Enabled | '               + (ps.PermissionsApiEnabled            ? '✅' : '❌') + ' |\n'
+             + '| Author Apex | '               + (ps.PermissionsAuthorApex             ? '✅' : '❌') + ' |\n'
+             + '| Customize Application | '     + (ps.PermissionsCustomizeApplication   ? '✅' : '❌') + ' |\n'
+             + '| Manage Users | '              + (ps.PermissionsManageUsers            ? '✅' : '❌') + ' |\n'
+             + '| Modify All Data | '           + (ps.PermissionsModifyAllData          ? '✅' : '❌') + ' |\n'
+             + '| View All Data | '             + (ps.PermissionsViewAllData            ? '✅' : '❌') + ' |\n';
     }
 
     // ── Permission Set Groups (list) ──────────────────────────────────────────
     private static String getPermissionSetGroups() {
         List<PermissionSetGroup> psg = [
-            SELECT Id, MasterLabel, DeveloperName, Status
-            FROM PermissionSetGroup ORDER BY MasterLabel LIMIT 50
+            SELECT Id, MasterLabel, DeveloperName, Status FROM PermissionSetGroup ORDER BY MasterLabel LIMIT 50
         ];
         if (psg.isEmpty()) return '📋 No permission set groups found.';
-        String result = '## 🗂 Permission Set Groups (' + psg.size() + ')\n\n'
-                      + '| Label | API Name | Status |\n|---|---|---|\n';
+        String r = '## 🗂 Permission Set Groups (' + psg.size() + ')\n\n| Label | API Name | Status |\n|---|---|---|\n';
         for (PermissionSetGroup g : psg)
-            result += '| **' + g.MasterLabel + '** | `' + g.DeveloperName + '` | ' + g.Status + ' |\n';
-        return result;
+            r += '| **' + g.MasterLabel + '** | `' + g.DeveloperName + '` | ' + g.Status + ' |\n';
+        return r;
     }
 
-    // ── Permission Set Group (single detail) ──────────────────────────────────
+    // ── Permission Set Group (detail) ─────────────────────────────────────────
     private static String getPermissionSetGroupDetail(String prompt) {
         try {
             String searchName = extractQuotedOrKeywordValue(prompt);
             if (String.isBlank(searchName))
                 return '❌ Please specify a name.\nExample: "Show details of permission set group Commerce_Shopper"';
 
-            List<PermissionSetGroup> results = [
-                SELECT Id, MasterLabel, DeveloperName, Description,
-                       Status, CreatedDate, LastModifiedDate,
-                       CreatedBy.Name, LastModifiedBy.Name
+            // Exact match first (by DeveloperName)
+            List<PermissionSetGroup> exact = [
+                SELECT Id, MasterLabel, DeveloperName, Description, Status,
+                       CreatedDate, LastModifiedDate, CreatedBy.Name, LastModifiedBy.Name
+                FROM PermissionSetGroup WHERE DeveloperName = :searchName LIMIT 1
+            ];
+            if (!exact.isEmpty()) return formatPSGDetail(exact[0]);
+
+            // LIKE partial
+            List<PermissionSetGroup> partial = [
+                SELECT Id, MasterLabel, DeveloperName, Description, Status,
+                       CreatedDate, LastModifiedDate, CreatedBy.Name, LastModifiedBy.Name
                 FROM PermissionSetGroup
                 WHERE MasterLabel   LIKE :('%' + searchName + '%')
                    OR DeveloperName LIKE :('%' + searchName + '%')
                 ORDER BY MasterLabel LIMIT 5
             ];
+            if (partial.isEmpty())
+                return '❌ No permission set group found matching **"' + searchName + '"**.\n\nTry: "List all PS groups"';
+            if (partial.size() == 1) return formatPSGDetail(partial[0]);
 
-            if (results.isEmpty())
-                return '❌ No permission set group found matching **"' + searchName + '"**.\n\n'
-                     + 'Try: "List all PS groups" to see available groups.';
+            String t = '## 🗂 Multiple Matches for "' + searchName + '"\n\n| Label | API Name | Status |\n|---|---|---|\n';
+            for (PermissionSetGroup g : partial)
+                t += '| **' + g.MasterLabel + '** | `' + g.DeveloperName + '` | ' + g.Status + ' |\n';
+            return t + '\n> Be more specific, e.g. "details of PS group ' + partial[0].MasterLabel + '"';
+        } catch (Exception e) { return '❌ Error: ' + e.getMessage(); }
+    }
 
-            if (results.size() > 1) {
-                String table = '## 🗂 Multiple Matches for "' + searchName + '"\n\n'
-                             + '| Label | API Name | Status |\n|---|---|---|\n';
-                for (PermissionSetGroup g : results)
-                    table += '| **' + g.MasterLabel + '** | `' + g.DeveloperName + '` | ' + g.Status + ' |\n';
-                table += '\n> Be more specific, e.g. "details of PS group ' + results[0].MasterLabel + '"';
-                return table;
-            }
-
-            PermissionSetGroup g = results[0];
-            List<PermissionSetGroupComponent> members = [
-                SELECT PermissionSet.Label, PermissionSet.Name
-                FROM PermissionSetGroupComponent
-                WHERE PermissionSetGroupId = :g.Id LIMIT 20
-            ];
-
-            String result = '## 🗂 Permission Set Group Detail\n\n'
-                          + '| Field | Value |\n|---|---|\n'
-                          + '| **Label** | '            + g.MasterLabel + ' |\n'
-                          + '| **API Name** | `'         + g.DeveloperName + '` |\n'
-                          + '| **Status** | '           + g.Status + ' |\n'
-                          + '| **Description** | '      + (String.isNotBlank(g.Description) ? g.Description : '—') + ' |\n'
-                          + '| **Created Date** | '     + String.valueOf(g.CreatedDate).substring(0,10) + ' |\n'
-                          + '| **Created By** | '       + (g.CreatedBy != null ? g.CreatedBy.Name : '—') + ' |\n'
-                          + '| **Last Modified** | '    + String.valueOf(g.LastModifiedDate).substring(0,10) + ' |\n'
-                          + '| **Last Modified By** | ' + (g.LastModifiedBy != null ? g.LastModifiedBy.Name : '—') + ' |\n'
-                          + '| **Record ID** | `'        + g.Id + '` |\n';
-
-            if (!members.isEmpty()) {
-                result += '\n### Member Permission Sets (' + members.size() + ')\n\n'
-                        + '| Label | API Name |\n|---|---|\n';
-                for (PermissionSetGroupComponent m : members)
-                    result += '| ' + m.PermissionSet.Label + ' | `' + m.PermissionSet.Name + '` |\n';
-            }
-            return result;
-
-        } catch (Exception e) {
-            return '❌ Error fetching PS group: ' + e.getMessage();
+    private static String formatPSGDetail(PermissionSetGroup g) {
+        List<PermissionSetGroupComponent> members = [
+            SELECT PermissionSet.Label, PermissionSet.Name
+            FROM PermissionSetGroupComponent WHERE PermissionSetGroupId = :g.Id LIMIT 20
+        ];
+        String r = '## 🗂 Permission Set Group Detail\n\n| Field | Value |\n|---|---|\n'
+                 + '| **Label** | '            + g.MasterLabel + ' |\n'
+                 + '| **API Name** | `'         + g.DeveloperName + '` |\n'
+                 + '| **Status** | '           + g.Status + ' |\n'
+                 + '| **Description** | '      + (String.isNotBlank(g.Description) ? g.Description : '—') + ' |\n'
+                 + '| **Created Date** | '     + String.valueOf(g.CreatedDate).substring(0,10) + ' |\n'
+                 + '| **Created By** | '       + (g.CreatedBy != null ? g.CreatedBy.Name : '—') + ' |\n'
+                 + '| **Last Modified** | '    + String.valueOf(g.LastModifiedDate).substring(0,10) + ' |\n'
+                 + '| **Last Modified By** | ' + (g.LastModifiedBy != null ? g.LastModifiedBy.Name : '—') + ' |\n'
+                 + '| **Record ID** | `'        + g.Id + '` |\n';
+        if (!members.isEmpty()) {
+            r += '\n### Member Permission Sets (' + members.size() + ')\n\n| Label | API Name |\n|---|---|\n';
+            for (PermissionSetGroupComponent m : members)
+                r += '| ' + m.PermissionSet.Label + ' | `' + m.PermissionSet.Name + '` |\n';
         }
+        return r;
     }
 
     // ── Profiles (list) ───────────────────────────────────────────────────────
     private static String getProfiles() {
-        List<Profile> profiles = [
-            SELECT Id, Name, UserType FROM Profile ORDER BY Name LIMIT 50
-        ];
-        String result = '## 👥 Profiles (' + profiles.size() + ')\n\n'
-                      + '| Name | User Type |\n|---|---|\n';
-        for (Profile p : profiles)
-            result += '| **' + p.Name + '** | ' + p.UserType + ' |\n';
-        return result;
+        List<Profile> ps = [SELECT Id, Name, UserType FROM Profile ORDER BY Name LIMIT 50];
+        String r = '## 👥 Profiles (' + ps.size() + ')\n\n| Name | User Type |\n|---|---|\n';
+        for (Profile p : ps) r += '| **' + p.Name + '** | ' + p.UserType + ' |\n';
+        return r;
     }
 
-    // ── Profile (single detail) ───────────────────────────────────────────────
+    // ── Profile (detail) ──────────────────────────────────────────────────────
     private static String getProfileDetail(String prompt) {
         try {
             String searchName = extractQuotedOrKeywordValue(prompt);
             if (String.isBlank(searchName))
                 return '❌ Please specify a profile name.\nExample: "Show details of profile System Administrator"';
 
-            List<Profile> results = [
-                SELECT Id, Name, UserType, Description,
-                       CreatedDate, LastModifiedDate,
+            List<Profile> exact = [
+                SELECT Id, Name, UserType, Description, CreatedDate, LastModifiedDate,
                        CreatedBy.Name, LastModifiedBy.Name,
                        PermissionsApiEnabled, PermissionsAuthorApex,
                        PermissionsModifyAllData, PermissionsViewAllData,
                        PermissionsManageUsers, PermissionsCustomizeApplication
-                FROM Profile
-                WHERE Name LIKE :('%' + searchName + '%')
-                ORDER BY Name LIMIT 5
+                FROM Profile WHERE Name = :searchName LIMIT 1
             ];
+            if (!exact.isEmpty()) return formatProfileDetail(exact[0]);
 
-            if (results.isEmpty())
-                return '❌ No profile found matching **"' + searchName + '"**.\n\n'
-                     + 'Try: "List all profiles" to see what\'s available.';
+            List<Profile> partial = [
+                SELECT Id, Name, UserType, Description, CreatedDate, LastModifiedDate,
+                       CreatedBy.Name, LastModifiedBy.Name,
+                       PermissionsApiEnabled, PermissionsAuthorApex,
+                       PermissionsModifyAllData, PermissionsViewAllData,
+                       PermissionsManageUsers, PermissionsCustomizeApplication
+                FROM Profile WHERE Name LIKE :('%' + searchName + '%') ORDER BY Name LIMIT 5
+            ];
+            if (partial.isEmpty())
+                return '❌ No profile found matching **"' + searchName + '"**.\n\nTry: "List all profiles"';
+            if (partial.size() == 1) return formatProfileDetail(partial[0]);
 
-            if (results.size() > 1) {
-                String table = '## 👥 Multiple Matches for "' + searchName + '"\n\n'
-                             + '| Name | User Type |\n|---|---|\n';
-                for (Profile p : results)
-                    table += '| **' + p.Name + '** | ' + p.UserType + ' |\n';
-                table += '\n> Be more specific, e.g. "details of profile ' + results[0].Name + '"';
-                return table;
-            }
+            String t = '## 👥 Multiple Matches for "' + searchName + '"\n\n| Name | User Type |\n|---|---|\n';
+            for (Profile p : partial) t += '| **' + p.Name + '** | ' + p.UserType + ' |\n';
+            return t + '\n> Be more specific, e.g. "details of profile ' + partial[0].Name + '"';
+        } catch (Exception e) { return '❌ Error: ' + e.getMessage(); }
+    }
 
-            Profile p = results[0];
-            return '## 👥 Profile Detail\n\n'
-                 + '| Field | Value |\n|---|---|\n'
-                 + '| **Name** | '              + p.Name + ' |\n'
-                 + '| **User Type** | '         + p.UserType + ' |\n'
-                 + '| **Description** | '       + (String.isNotBlank(p.Description) ? p.Description : '—') + ' |\n'
-                 + '| **Created Date** | '      + String.valueOf(p.CreatedDate).substring(0,10) + ' |\n'
-                 + '| **Created By** | '        + (p.CreatedBy != null ? p.CreatedBy.Name : '—') + ' |\n'
-                 + '| **Last Modified** | '     + String.valueOf(p.LastModifiedDate).substring(0,10) + ' |\n'
-                 + '| **Last Modified By** | '  + (p.LastModifiedBy != null ? p.LastModifiedBy.Name : '—') + ' |\n'
-                 + '| **Record ID** | `'         + p.Id + '` |\n\n'
-                 + '### Key Permissions\n\n'
-                 + '| Permission | Enabled |\n|---|---|\n'
-                 + '| API Enabled | '               + (p.PermissionsApiEnabled            ? '✅' : '❌') + ' |\n'
-                 + '| Author Apex | '               + (p.PermissionsAuthorApex             ? '✅' : '❌') + ' |\n'
-                 + '| Customize Application | '     + (p.PermissionsCustomizeApplication   ? '✅' : '❌') + ' |\n'
-                 + '| Manage Users | '              + (p.PermissionsManageUsers            ? '✅' : '❌') + ' |\n'
-                 + '| Modify All Data | '           + (p.PermissionsModifyAllData          ? '✅' : '❌') + ' |\n'
-                 + '| View All Data | '             + (p.PermissionsViewAllData            ? '✅' : '❌') + ' |\n';
-
-        } catch (Exception e) {
-            return '❌ Error fetching profile: ' + e.getMessage();
-        }
+    private static String formatProfileDetail(Profile p) {
+        return '## 👥 Profile Detail\n\n| Field | Value |\n|---|---|\n'
+             + '| **Name** | '              + p.Name + ' |\n'
+             + '| **User Type** | '         + p.UserType + ' |\n'
+             + '| **Description** | '       + (String.isNotBlank(p.Description) ? p.Description : '—') + ' |\n'
+             + '| **Created Date** | '      + String.valueOf(p.CreatedDate).substring(0,10) + ' |\n'
+             + '| **Created By** | '        + (p.CreatedBy != null ? p.CreatedBy.Name : '—') + ' |\n'
+             + '| **Last Modified** | '     + String.valueOf(p.LastModifiedDate).substring(0,10) + ' |\n'
+             + '| **Last Modified By** | '  + (p.LastModifiedBy != null ? p.LastModifiedBy.Name : '—') + ' |\n'
+             + '| **Record ID** | `'         + p.Id + '` |\n\n'
+             + '### Key Permissions\n\n| Permission | Enabled |\n|---|---|\n'
+             + '| API Enabled | '               + (p.PermissionsApiEnabled            ? '✅' : '❌') + ' |\n'
+             + '| Author Apex | '               + (p.PermissionsAuthorApex             ? '✅' : '❌') + ' |\n'
+             + '| Customize Application | '     + (p.PermissionsCustomizeApplication   ? '✅' : '❌') + ' |\n'
+             + '| Manage Users | '              + (p.PermissionsManageUsers            ? '✅' : '❌') + ' |\n'
+             + '| Modify All Data | '           + (p.PermissionsModifyAllData          ? '✅' : '❌') + ' |\n'
+             + '| View All Data | '             + (p.PermissionsViewAllData            ? '✅' : '❌') + ' |\n';
     }
 
     // ── User Roles (list) ─────────────────────────────────────────────────────
     private static String getUserRoles() {
-        List<UserRole> roles = [
-            SELECT Id, Name, DeveloperName, ParentRoleId
-            FROM UserRole ORDER BY Name LIMIT 50
-        ];
-        String result = '## 🏢 User Roles (' + roles.size() + ')\n\n'
-                      + '| Name | API Name | Has Parent |\n|---|---|---|\n';
-        for (UserRole r : roles)
-            result += '| **' + r.Name + '** | `' + r.DeveloperName + '` | '
-                    + (r.ParentRoleId != null ? '✅' : '') + ' |\n';
-        return result;
+        List<UserRole> roles = [SELECT Id, Name, DeveloperName, ParentRoleId FROM UserRole ORDER BY Name LIMIT 50];
+        String r = '## 🏢 User Roles (' + roles.size() + ')\n\n| Name | API Name | Has Parent |\n|---|---|---|\n';
+        for (UserRole u : roles)
+            r += '| **' + u.Name + '** | `' + u.DeveloperName + '` | ' + (u.ParentRoleId != null ? '✅' : '') + ' |\n';
+        return r;
     }
 
-    // ── User Role (single detail) ─────────────────────────────────────────────
+    // ── User Role (detail) ────────────────────────────────────────────────────
     private static String getUserRoleDetail(String prompt) {
         try {
             String searchName = extractQuotedOrKeywordValue(prompt);
             if (String.isBlank(searchName))
                 return '❌ Please specify a role name.\nExample: "Show details of user role Recruiter"';
 
-            List<UserRole> byName = new List<UserRole>();
-            List<UserRole> byDev  = new List<UserRole>();
-            try {
-                byName = [
-                    SELECT Id, Name, DeveloperName, ParentRoleId,
-                        ParentRole.Name, PortalType,
-                        CaseAccessForAccountOwner,
-                        OpportunityAccessForAccountOwner,
-                        ContactAccessForAccountOwner
-                    FROM UserRole
-                    WHERE Name LIKE :('%' + searchName + '%')
-                    ORDER BY Name LIMIT 5
-                ];
-            } catch (Exception e1) {}
-            try {
-                byDev = [
-                    SELECT Id, Name, DeveloperName, ParentRoleId,
-                        ParentRole.Name, PortalType,
-                        CaseAccessForAccountOwner,
-                        OpportunityAccessForAccountOwner,
-                        ContactAccessForAccountOwner
-                    FROM UserRole
-                    WHERE DeveloperName LIKE :('%' + searchName + '%')
-                    ORDER BY Name LIMIT 5
-                ];
-            } catch (Exception e2) {}
+            List<UserRole> exact = [
+                SELECT Id, Name, DeveloperName, ParentRoleId, ParentRole.Name, PortalType,
+                       CaseAccessForAccountOwner, OpportunityAccessForAccountOwner,
+                       ContactAccessForAccountOwner
+                FROM UserRole WHERE Name = :searchName LIMIT 1
+            ];
+            if (!exact.isEmpty()) return formatUserRoleDetail(exact[0]);
 
-            Map<Id, UserRole> merged = new Map<Id, UserRole>();
-            for (UserRole r : byName) if (r != null) merged.put(r.Id, r);
-            for (UserRole r : byDev)  if (r != null) merged.put(r.Id, r);
+            List<UserRole> partial = [
+                SELECT Id, Name, DeveloperName, ParentRoleId, ParentRole.Name, PortalType,
+                       CaseAccessForAccountOwner, OpportunityAccessForAccountOwner,
+                       ContactAccessForAccountOwner
+                FROM UserRole
+                WHERE Name LIKE :('%' + searchName + '%') OR DeveloperName LIKE :('%' + searchName + '%')
+                ORDER BY Name LIMIT 5
+            ];
+            if (partial.isEmpty())
+                return '❌ No user role found matching **"' + searchName + '"**.\n\nTry: "Show all user roles"';
+            if (partial.size() == 1) return formatUserRoleDetail(partial[0]);
 
-            if (merged.isEmpty())
-                return '❌ No user role found matching **"' + searchName + '"**.\n\n'
-                    + 'Try: "Show all user roles" to see what\'s available.';
+            String t = '## 🏢 Multiple Matches for "' + searchName + '"\n\n| Name | API Name | Has Parent |\n|---|---|---|\n';
+            for (UserRole r : partial)
+                t += '| **' + r.Name + '** | `' + r.DeveloperName + '` | ' + (r.ParentRoleId != null ? '✅' : '—') + ' |\n';
+            return t + '\n> Be more specific, e.g. "details of user role ' + partial[0].Name + '"';
+        } catch (Exception e) { return '❌ Error: ' + e.getMessage(); }
+    }
 
-            List<UserRole> results = new List<UserRole>(merged.values());
-
-            if (results.size() > 1) {
-                String table = '## 🏢 Multiple Matches for "' + searchName + '"\n\n'
-                            + '| Name | API Name | Has Parent |\n|---|---|---|\n';
-                for (UserRole r : results)
-                    table += '| **' + r.Name + '** | `' + r.DeveloperName + '` | '
-                        + (r.ParentRoleId != null ? '✅' : '—') + ' |\n';
-                table += '\n> Be more specific, e.g. "details of user role ' + results[0].Name + '"';
-                return table;
-            }
-
-            UserRole r = results[0];
-            return '## 🏢 User Role Detail\n\n'
-                + '| Field | Value |\n|---|---|\n'
-                + '| **Name** | '               + (r.Name != null ? r.Name : '—') + ' |\n'
-                + '| **API Name** | `'           + (r.DeveloperName != null ? r.DeveloperName : '—') + '` |\n'
-                + '| **Parent Role** | '         + (r.ParentRole != null ? r.ParentRole.Name : '— (Top Level)') + ' |\n'
-                + '| **Portal Type** | '         + (String.isNotBlank(r.PortalType) ? r.PortalType : '—') + ' |\n'
-                + '| **Case Access** | '         + (r.CaseAccessForAccountOwner != null ? r.CaseAccessForAccountOwner : '—') + ' |\n'
-                + '| **Opp Access** | '          + (r.OpportunityAccessForAccountOwner != null ? r.OpportunityAccessForAccountOwner : '—') + ' |\n'
-                + '| **Contact Access** | '      + (r.ContactAccessForAccountOwner != null ? r.ContactAccessForAccountOwner : '—') + ' |\n'
-                + '| **Record ID** | `'          + r.Id + '` |\n';
-
-        } catch (Exception e) {
-            return '❌ Error fetching role: ' + e.getMessage();
-        }
+    private static String formatUserRoleDetail(UserRole r) {
+        return '## 🏢 User Role Detail\n\n| Field | Value |\n|---|---|\n'
+            + '| **Name** | '              + r.Name + ' |\n'
+            + '| **API Name** | `'          + r.DeveloperName + '` |\n'
+            + '| **Parent Role** | '        + (r.ParentRole != null ? r.ParentRole.Name : '— (Top Level)') + ' |\n'
+            + '| **Portal Type** | '        + (String.isNotBlank(r.PortalType) ? r.PortalType : '—') + ' |\n'
+            + '| **Case Access** | '        + (r.CaseAccessForAccountOwner    != null ? r.CaseAccessForAccountOwner    : '—') + ' |\n'
+            + '| **Opp Access** | '         + (r.OpportunityAccessForAccountOwner != null ? r.OpportunityAccessForAccountOwner : '—') + ' |\n'
+            + '| **Contact Access** | '     + (r.ContactAccessForAccountOwner  != null ? r.ContactAccessForAccountOwner  : '—') + ' |\n'
+            + '| **Record ID** | `'          + r.Id + '` |\n';
     }
 
     // ── Active Users (list) ───────────────────────────────────────────────────
@@ -776,276 +682,230 @@ public with sharing class SfAiAgentController {
             SELECT Id, Name, Username, Profile.Name, LastLoginDate
             FROM User WHERE IsActive = true ORDER BY Name LIMIT 50
         ];
-        String result = '## 👥 Active Users (' + users.size() + ')\n\n'
-                      + '| Name | Username | Profile | Last Login |\n|---|---|---|---|\n';
+        String r = '## 👥 Active Users (' + users.size() + ')\n\n| Name | Username | Profile | Last Login |\n|---|---|---|---|\n';
         for (User u : users)
-            result += '| **' + u.Name + '** | `' + u.Username + '` | '
-                    + (u.Profile != null ? u.Profile.Name : '—') + ' | '
-                    + (u.LastLoginDate != null
-                       ? String.valueOf(u.LastLoginDate).substring(0,10)
-                       : 'Never') + ' |\n';
-        return result;
+            r += '| **' + u.Name + '** | `' + u.Username + '` | '
+               + (u.Profile != null ? u.Profile.Name : '—') + ' | '
+               + (u.LastLoginDate != null ? String.valueOf(u.LastLoginDate).substring(0,10) : 'Never') + ' |\n';
+        return r;
     }
 
-    // ── User (single detail) ──────────────────────────────────────────────────
+    // ── User (detail) ─────────────────────────────────────────────────────────
     private static String getUserDetail(String prompt) {
         try {
             String searchName = extractQuotedOrKeywordValue(prompt);
             if (String.isBlank(searchName))
                 return '❌ Please specify a user name.\nExample: "Show details of user John Smith"';
 
-            List<User> results = [
-                SELECT Id, Name, Username, Email, Phone,
-                       Profile.Name, UserRole.Name,
-                       IsActive, LastLoginDate, CreatedDate,
-                       LanguageLocaleKey, TimeZoneSidKey,
-                       Department, Title, CompanyName,
+            List<User> exact = [
+                SELECT Id, Name, Username, Email, Phone, Profile.Name, UserRole.Name,
+                       IsActive, LastLoginDate, CreatedDate, LanguageLocaleKey,
+                       TimeZoneSidKey, Department, Title, CompanyName,
+                       CreatedBy.Name, LastModifiedDate, LastModifiedBy.Name
+                FROM User WHERE Name = :searchName AND IsActive = true LIMIT 1
+            ];
+            if (!exact.isEmpty()) return formatUserDetail(exact[0]);
+
+            List<User> partial = [
+                SELECT Id, Name, Username, Email, Phone, Profile.Name, UserRole.Name,
+                       IsActive, LastLoginDate, CreatedDate, LanguageLocaleKey,
+                       TimeZoneSidKey, Department, Title, CompanyName,
                        CreatedBy.Name, LastModifiedDate, LastModifiedBy.Name
                 FROM User
-                WHERE (Name     LIKE :('%' + searchName + '%')
+                WHERE (Name LIKE :('%' + searchName + '%')
                    OR  Username LIKE :('%' + searchName + '%')
                    OR  Email    LIKE :('%' + searchName + '%'))
                   AND IsActive = true
                 ORDER BY Name LIMIT 5
             ];
+            if (partial.isEmpty())
+                return '❌ No active user found matching **"' + searchName + '"**.\n\nTry: "Show all active users"';
+            if (partial.size() == 1) return formatUserDetail(partial[0]);
 
-            if (results.isEmpty())
-                return '❌ No active user found matching **"' + searchName + '"**.\n\n'
-                     + 'Try: "Show all active users" to see what\'s available.';
+            String t = '## 👤 Multiple Matches for "' + searchName + '"\n\n| Name | Username | Profile |\n|---|---|---|\n';
+            for (User u : partial)
+                t += '| **' + u.Name + '** | `' + u.Username + '` | ' + (u.Profile != null ? u.Profile.Name : '—') + ' |\n';
+            return t + '\n> Be more specific, e.g. "details of user ' + partial[0].Name + '"';
+        } catch (Exception e) { return '❌ Error: ' + e.getMessage(); }
+    }
 
-            if (results.size() > 1) {
-                String table = '## 👤 Multiple Matches for "' + searchName + '"\n\n'
-                             + '| Name | Username | Profile |\n|---|---|---|\n';
-                for (User u : results)
-                    table += '| **' + u.Name + '** | `' + u.Username + '` | '
-                           + (u.Profile != null ? u.Profile.Name : '—') + ' |\n';
-                table += '\n> Be more specific, e.g. "details of user ' + results[0].Name + '"';
-                return table;
-            }
-
-            User u = results[0];
-            return '## 👤 User Detail\n\n'
-                 + '| Field | Value |\n|---|---|\n'
-                 + '| **Name** | '             + u.Name + ' |\n'
-                 + '| **Username** | `'         + u.Username + '` |\n'
-                 + '| **Email** | '            + u.Email + ' |\n'
-                 + '| **Phone** | '            + (String.isNotBlank(u.Phone) ? u.Phone : '—') + ' |\n'
-                 + '| **Title** | '            + (String.isNotBlank(u.Title) ? u.Title : '—') + ' |\n'
-                 + '| **Department** | '       + (String.isNotBlank(u.Department) ? u.Department : '—') + ' |\n'
-                 + '| **Company** | '          + (String.isNotBlank(u.CompanyName) ? u.CompanyName : '—') + ' |\n'
-                 + '| **Profile** | '          + (u.Profile  != null ? u.Profile.Name  : '—') + ' |\n'
-                 + '| **Role** | '             + (u.UserRole != null ? u.UserRole.Name : '—') + ' |\n'
-                 + '| **Active** | '           + (u.IsActive ? '✅ Yes' : '❌ No') + ' |\n'
-                 + '| **Last Login** | '       + (u.LastLoginDate != null ? String.valueOf(u.LastLoginDate).substring(0,10) : 'Never') + ' |\n'
-                 + '| **Language** | '         + (String.isNotBlank(u.LanguageLocaleKey) ? u.LanguageLocaleKey : '—') + ' |\n'
-                 + '| **Timezone** | '         + (String.isNotBlank(u.TimeZoneSidKey) ? u.TimeZoneSidKey : '—') + ' |\n'
-                 + '| **Created Date** | '     + String.valueOf(u.CreatedDate).substring(0,10) + ' |\n'
-                 + '| **Created By** | '       + (u.CreatedBy != null ? u.CreatedBy.Name : '—') + ' |\n'
-                 + '| **Last Modified** | '    + String.valueOf(u.LastModifiedDate).substring(0,10) + ' |\n'
-                 + '| **Last Modified By** | ' + (u.LastModifiedBy != null ? u.LastModifiedBy.Name : '—') + ' |\n'
-                 + '| **Record ID** | `'        + u.Id + '` |\n';
-
-        } catch (Exception e) {
-            return '❌ Error fetching user: ' + e.getMessage();
-        }
+    private static String formatUserDetail(User u) {
+        return '## 👤 User Detail\n\n| Field | Value |\n|---|---|\n'
+             + '| **Name** | '             + u.Name + ' |\n'
+             + '| **Username** | `'         + u.Username + '` |\n'
+             + '| **Email** | '            + u.Email + ' |\n'
+             + '| **Phone** | '            + (String.isNotBlank(u.Phone) ? u.Phone : '—') + ' |\n'
+             + '| **Title** | '            + (String.isNotBlank(u.Title) ? u.Title : '—') + ' |\n'
+             + '| **Department** | '       + (String.isNotBlank(u.Department) ? u.Department : '—') + ' |\n'
+             + '| **Company** | '          + (String.isNotBlank(u.CompanyName) ? u.CompanyName : '—') + ' |\n'
+             + '| **Profile** | '          + (u.Profile  != null ? u.Profile.Name  : '—') + ' |\n'
+             + '| **Role** | '             + (u.UserRole != null ? u.UserRole.Name : '—') + ' |\n'
+             + '| **Active** | '           + (u.IsActive ? '✅ Yes' : '❌ No') + ' |\n'
+             + '| **Last Login** | '       + (u.LastLoginDate != null ? String.valueOf(u.LastLoginDate).substring(0,10) : 'Never') + ' |\n'
+             + '| **Language** | '         + (String.isNotBlank(u.LanguageLocaleKey) ? u.LanguageLocaleKey : '—') + ' |\n'
+             + '| **Timezone** | '         + (String.isNotBlank(u.TimeZoneSidKey) ? u.TimeZoneSidKey : '—') + ' |\n'
+             + '| **Created Date** | '     + String.valueOf(u.CreatedDate).substring(0,10) + ' |\n'
+             + '| **Created By** | '       + (u.CreatedBy != null ? u.CreatedBy.Name : '—') + ' |\n'
+             + '| **Last Modified** | '    + String.valueOf(u.LastModifiedDate).substring(0,10) + ' |\n'
+             + '| **Last Modified By** | ' + (u.LastModifiedBy != null ? u.LastModifiedBy.Name : '—') + ' |\n'
+             + '| **Record ID** | `'        + u.Id + '` |\n';
     }
 
     // ── Flows (list) ──────────────────────────────────────────────────────────
     private static String getFlows() {
         try {
             List<FlowDefinitionView> flows = [
-                SELECT ApiName, Label, ProcessType, IsActive
-                FROM FlowDefinitionView
-                LIMIT 200
+                SELECT ApiName, Label, ProcessType, IsActive FROM FlowDefinitionView LIMIT 200
             ];
             if (flows.isEmpty()) return '📋 No flows found.';
-            String result = '## ⚡ Flows (' + flows.size() + ')\n\n'
-                          + '| Label | API Name | Type | Active |\n|---|---|---|---|\n';
+            String r = '## ⚡ Flows (' + flows.size() + ')\n\n| Label | API Name | Type | Active |\n|---|---|---|---|\n';
             for (FlowDefinitionView f : flows)
-                result += '| **' + (f.Label != null ? f.Label : '—') + '**'
-                        + ' | `' + (f.ApiName != null ? f.ApiName : '—') + '`'
-                        + ' | ' + (f.ProcessType != null ? f.ProcessType : '—')
-                        + ' | ' + (f.IsActive ? '✅' : '❌') + ' |\n';
-            return result;
-        } catch (Exception e) {
-            return '❌ Error fetching flows: ' + e.getMessage();
-        }
+                r += '| **' + (f.Label != null ? f.Label : '—') + '**'
+                   + ' | `' + (f.ApiName != null ? f.ApiName : '—') + '`'
+                   + ' | ' + (f.ProcessType != null ? f.ProcessType : '—')
+                   + ' | ' + (f.IsActive ? '✅' : '❌') + ' |\n';
+            return r;
+        } catch (Exception e) { return '❌ Error fetching flows: ' + e.getMessage(); }
     }
 
-    // ── Flow (single detail) ──────────────────────────────────────────────────
+    // ── Flow (detail) ─────────────────────────────────────────────────────────
     private static String getFlowDetail(String prompt) {
         try {
             String searchName = extractQuotedOrKeywordValue(prompt);
             if (String.isBlank(searchName))
                 return '❌ Please specify a flow name.\nExample: "Show details of flow MyFlow"';
 
-            // FlowDefinitionView does NOT support OR — run two queries
-            List<FlowDefinitionView> byLabel   = new List<FlowDefinitionView>();
-            List<FlowDefinitionView> byApiName = new List<FlowDefinitionView>();
-
+            // FlowDefinitionView does NOT support OR — two separate queries
+            List<FlowDefinitionView> byLabel = new List<FlowDefinitionView>();
+            List<FlowDefinitionView> byApi   = new List<FlowDefinitionView>();
             try {
-                byLabel = [
-                    SELECT ApiName, Label, ProcessType, TriggerType,
-                           IsActive, Description, LastModifiedDate
-                    FROM FlowDefinitionView
-                    WHERE Label LIKE :('%' + searchName + '%')
-                    LIMIT 5
-                ];
-            } catch (Exception e1) { System.debug('byLabel: ' + e1.getMessage()); }
-
+                byLabel = [SELECT ApiName, Label, ProcessType, TriggerType, IsActive, Description, LastModifiedDate
+                           FROM FlowDefinitionView WHERE Label = :searchName LIMIT 1];
+            } catch (Exception e1) { }
+            if (byLabel.isEmpty()) {
+                try {
+                    byLabel = [SELECT ApiName, Label, ProcessType, TriggerType, IsActive, Description, LastModifiedDate
+                               FROM FlowDefinitionView WHERE Label LIKE :('%' + searchName + '%') LIMIT 5];
+                } catch (Exception e2) { }
+            }
             try {
-                byApiName = [
-                    SELECT ApiName, Label, ProcessType, TriggerType,
-                           IsActive, Description, LastModifiedDate
-                    FROM FlowDefinitionView
-                    WHERE ApiName LIKE :('%' + searchName + '%')
-                    LIMIT 5
-                ];
-            } catch (Exception e2) { System.debug('byApiName: ' + e2.getMessage()); }
+                byApi = [SELECT ApiName, Label, ProcessType, TriggerType, IsActive, Description, LastModifiedDate
+                         FROM FlowDefinitionView WHERE ApiName LIKE :('%' + searchName + '%') LIMIT 5];
+            } catch (Exception e3) { }
 
             Map<String, FlowDefinitionView> merged = new Map<String, FlowDefinitionView>();
-            for (FlowDefinitionView f : byLabel)   { if (f != null && f.ApiName != null) merged.put(f.ApiName, f); }
-            for (FlowDefinitionView f : byApiName) { if (f != null && f.ApiName != null) merged.put(f.ApiName, f); }
+            for (FlowDefinitionView f : byLabel) { if (f != null && f.ApiName != null) merged.put(f.ApiName, f); }
+            for (FlowDefinitionView f : byApi)   { if (f != null && f.ApiName != null) merged.put(f.ApiName, f); }
 
             if (merged.isEmpty())
-                return '❌ No flow found matching **"' + searchName + '"**.\n\n'
-                     + 'Try: "List all active flows" to see what\'s available.';
+                return '❌ No flow found matching **"' + searchName + '"**.\n\nTry: "List all active flows"';
 
             List<FlowDefinitionView> results = new List<FlowDefinitionView>(merged.values());
+            if (results.size() == 1) return formatFlowDetail(results[0]);
 
-            if (results.size() > 1) {
-                String table = '## ⚡ Multiple Matches for "' + searchName + '"\n\n'
-                             + '| Label | API Name | Active |\n|---|---|---|\n';
-                for (FlowDefinitionView f : results) {
-                    if (f == null) continue;
-                    table += '| **' + (f.Label != null ? f.Label : '—') + '**'
-                           + ' | `' + (f.ApiName != null ? f.ApiName : '—') + '`'
-                           + ' | ' + (f.IsActive ? '✅' : '❌') + ' |\n';
-                }
-                table += '\n> Be more specific, e.g. "details of flow ' + results[0].Label + '"';
-                return table;
-            }
+            String t = '## ⚡ Multiple Matches for "' + searchName + '"\n\n| Label | API Name | Active |\n|---|---|---|\n';
+            for (FlowDefinitionView f : results)
+                t += '| **' + (f.Label != null ? f.Label : '—') + '** | `'
+                   + (f.ApiName != null ? f.ApiName : '—') + '` | ' + (f.IsActive ? '✅' : '❌') + ' |\n';
+            return t + '\n> Be more specific, e.g. "details of flow ' + results[0].Label + '"';
+        } catch (Exception e) { return '❌ Error fetching flow: ' + e.getMessage(); }
+    }
 
-            FlowDefinitionView f = results[0];
-            if (f == null) return '❌ Flow record is null. Please try again.';
-
-            return '## ⚡ Flow Detail\n\n'
-                 + '| Field | Value |\n|---|---|\n'
-                 + '| **Label** | '         + (f.Label       != null ? f.Label       : '—') + ' |\n'
-                 + '| **API Name** | `'      + (f.ApiName     != null ? f.ApiName     : '—') + '` |\n'
-                 + '| **Process Type** | '  + (f.ProcessType != null ? f.ProcessType : '—') + ' |\n'
-                 + '| **Trigger Type** | '  + (f.TriggerType != null ? f.TriggerType : '—') + ' |\n'
-                 + '| **Active** | '        + (f.IsActive ? '✅ Yes' : '❌ No') + ' |\n'
-                 + '| **Description** | '   + (String.isNotBlank(f.Description) ? f.Description : '—') + ' |\n'
-                 + '| **Last Modified** | ' + (f.LastModifiedDate != null
-                                               ? String.valueOf(f.LastModifiedDate).substring(0,10)
-                                               : '—') + ' |\n';
-        } catch (Exception e) {
-            return '❌ Error fetching flow: ' + e.getMessage();
-        }
+    private static String formatFlowDetail(FlowDefinitionView f) {
+        return '## ⚡ Flow Detail\n\n| Field | Value |\n|---|---|\n'
+             + '| **Label** | '         + (f.Label       != null ? f.Label       : '—') + ' |\n'
+             + '| **API Name** | `'      + (f.ApiName     != null ? f.ApiName     : '—') + '` |\n'
+             + '| **Process Type** | '  + (f.ProcessType != null ? f.ProcessType : '—') + ' |\n'
+             + '| **Trigger Type** | '  + (f.TriggerType != null ? f.TriggerType : '—') + ' |\n'
+             + '| **Active** | '        + (f.IsActive ? '✅ Yes' : '❌ No') + ' |\n'
+             + '| **Description** | '   + (String.isNotBlank(f.Description) ? f.Description : '—') + ' |\n'
+             + '| **Last Modified** | ' + (f.LastModifiedDate != null
+                                           ? String.valueOf(f.LastModifiedDate).substring(0,10) : '—') + ' |\n';
     }
 
     // ── Apex Classes (list) ───────────────────────────────────────────────────
     private static String getApexClasses() {
-        List<ApexClass> classes = [
-            SELECT Id, Name, Status, IsValid, LastModifiedDate
-            FROM ApexClass ORDER BY Name LIMIT 100
-        ];
-        String result = '## ⚙️ Apex Classes (' + classes.size() + ')\n\n'
-                      + '| Name | Status | Valid | Last Modified |\n|---|---|---|---|\n';
+        List<ApexClass> classes = [SELECT Id, Name, Status, IsValid, LastModifiedDate FROM ApexClass ORDER BY Name LIMIT 100];
+        String r = '## ⚙️ Apex Classes (' + classes.size() + ')\n\n| Name | Status | Valid | Last Modified |\n|---|---|---|---|\n';
         for (ApexClass c : classes)
-            result += '| `' + c.Name + '` | ' + c.Status + ' | '
-                    + (c.IsValid ? '✅' : '❌') + ' | '
-                    + String.valueOf(c.LastModifiedDate).substring(0,10) + ' |\n';
-        return result;
+            r += '| `' + c.Name + '` | ' + c.Status + ' | '
+               + (c.IsValid ? '✅' : '❌') + ' | '
+               + String.valueOf(c.LastModifiedDate).substring(0,10) + ' |\n';
+        return r;
     }
 
-    // ── Apex Class (single detail) ────────────────────────────────────────────
+    // ── Apex Class (detail) ───────────────────────────────────────────────────
     private static String getApexClassDetail(String prompt) {
         try {
             String searchName = extractQuotedOrKeywordValue(prompt);
             if (String.isBlank(searchName))
                 return '❌ Please specify a class name.\nExample: "Show details of Apex class SfAiAgentController"';
 
-            List<ApexClass> results = [
-                SELECT Id, Name, Status, IsValid, ApiVersion,
-                       LengthWithoutComments, Body,
-                       CreatedDate, LastModifiedDate,
-                       CreatedBy.Name, LastModifiedBy.Name,
-                       NamespacePrefix
-                FROM ApexClass
-                WHERE Name LIKE :('%' + searchName + '%')
-                ORDER BY Name LIMIT 5
+            // Exact match first
+            List<ApexClass> exact = [
+                SELECT Id, Name, Status, IsValid, ApiVersion, LengthWithoutComments, Body,
+                       CreatedDate, LastModifiedDate, CreatedBy.Name, LastModifiedBy.Name, NamespacePrefix
+                FROM ApexClass WHERE Name = :searchName LIMIT 1
             ];
+            if (!exact.isEmpty()) return formatApexClassDetail(exact[0]);
 
-            if (results.isEmpty())
-                return '❌ No Apex class found matching **"' + searchName + '"**.\n\n'
-                     + 'Try: "List all Apex classes" to see what\'s available.';
+            // LIKE partial
+            List<ApexClass> partial = [
+                SELECT Id, Name, Status, IsValid, ApiVersion, LengthWithoutComments, Body,
+                       CreatedDate, LastModifiedDate, CreatedBy.Name, LastModifiedBy.Name, NamespacePrefix
+                FROM ApexClass WHERE Name LIKE :('%' + searchName + '%') ORDER BY Name LIMIT 5
+            ];
+            if (partial.isEmpty())
+                return '❌ No Apex class found matching **"' + searchName + '"**.\n\nTry: "List all Apex classes"';
+            if (partial.size() == 1) return formatApexClassDetail(partial[0]);
 
-            if (results.size() > 1) {
-                String table = '## ⚙️ Multiple Matches for "' + searchName + '"\n\n'
-                             + '| Name | Status | Valid |\n|---|---|---|\n';
-                for (ApexClass c : results)
-                    table += '| `' + c.Name + '` | ' + c.Status + ' | '
-                           + (c.IsValid ? '✅' : '❌') + ' |\n';
-                table += '\n> Be more specific, e.g. "details of Apex class ' + results[0].Name + '"';
-                return table;
-            }
-
-            ApexClass c = results[0];
-            Integer lineCount = String.isNotBlank(c.Body) ? c.Body.split('\n').size() : 0;
-
-            return '## ⚙️ Apex Class Detail\n\n'
-                 + '| Field | Value |\n|---|---|\n'
-                 + '| **Name** | `'               + c.Name + '` |\n'
-                 + '| **Status** | '              + c.Status + ' |\n'
-                 + '| **Is Valid** | '            + (c.IsValid ? '✅ Yes' : '❌ No') + ' |\n'
-                 + '| **API Version** | '         + c.ApiVersion + ' |\n'
-                 + '| **Namespace** | '           + (String.isNotBlank(c.NamespacePrefix) ? '`' + c.NamespacePrefix + '`' : '— (no namespace)') + ' |\n'
-                 + '| **Lines of Code** | '       + lineCount + ' |\n'
-                 + '| **Chars (no comments)** | ' + c.LengthWithoutComments + ' |\n'
-                 + '| **Created Date** | '        + String.valueOf(c.CreatedDate).substring(0,10) + ' |\n'
-                 + '| **Created By** | '          + (c.CreatedBy != null ? c.CreatedBy.Name : '—') + ' |\n'
-                 + '| **Last Modified** | '       + String.valueOf(c.LastModifiedDate).substring(0,10) + ' |\n'
-                 + '| **Last Modified By** | '    + (c.LastModifiedBy != null ? c.LastModifiedBy.Name : '—') + ' |\n'
-                 + '| **Record ID** | `'           + c.Id + '` |\n';
-
-        } catch (Exception e) {
-            return '❌ Error fetching Apex class: ' + e.getMessage();
-        }
+            String t = '## ⚙️ Multiple Matches for "' + searchName + '"\n\n| Name | Status | Valid |\n|---|---|---|\n';
+            for (ApexClass c : partial)
+                t += '| `' + c.Name + '` | ' + c.Status + ' | ' + (c.IsValid ? '✅' : '❌') + ' |\n';
+            return t + '\n> Please be more specific. Example: "details of Apex class ' + partial[0].Name + '"';
+        } catch (Exception e) { return '❌ Error fetching Apex class: ' + e.getMessage(); }
     }
 
-    // ── Picklist VALUES for specific field ────────────────────────────────────
+    private static String formatApexClassDetail(ApexClass c) {
+        Integer lineCount = String.isNotBlank(c.Body) ? c.Body.split('\n').size() : 0;
+        return '## ⚙️ Apex Class Detail\n\n| Field | Value |\n|---|---|\n'
+             + '| **Name** | `'               + c.Name + '` |\n'
+             + '| **Status** | '              + c.Status + ' |\n'
+             + '| **Is Valid** | '            + (c.IsValid ? '✅ Yes' : '❌ No') + ' |\n'
+             + '| **API Version** | '         + c.ApiVersion + ' |\n'
+             + '| **Namespace** | '           + (String.isNotBlank(c.NamespacePrefix) ? '`' + c.NamespacePrefix + '`' : '— (no namespace)') + ' |\n'
+             + '| **Lines of Code** | '       + lineCount + ' |\n'
+             + '| **Chars (no comments)** | ' + c.LengthWithoutComments + ' |\n'
+             + '| **Created Date** | '        + String.valueOf(c.CreatedDate).substring(0,10) + ' |\n'
+             + '| **Created By** | '          + (c.CreatedBy != null ? c.CreatedBy.Name : '—') + ' |\n'
+             + '| **Last Modified** | '       + String.valueOf(c.LastModifiedDate).substring(0,10) + ' |\n'
+             + '| **Last Modified By** | '    + (c.LastModifiedBy != null ? c.LastModifiedBy.Name : '—') + ' |\n'
+             + '| **Record ID** | `'           + c.Id + '` |\n';
+    }
+
+    // ── Picklist VALUES ───────────────────────────────────────────────────────
     private static String getPicklistValues(String prompt) {
         String objectName = extractObjectName(prompt);
         String fieldName  = extractFieldName(prompt);
         if (String.isBlank(objectName) || String.isBlank(fieldName))
-            return '❌ Please specify both object and field.\n'
-                 + 'Example: "Show picklist values for Account.Industry"';
+            return '❌ Please specify both object and field.\nExample: "Show picklist values for Account.Industry"';
         try {
             Schema.SObjectType sot = Schema.getGlobalDescribe().get(objectName);
             if (sot == null) return '❌ Object `' + objectName + '` not found.';
             Schema.SObjectField fld = sot.getDescribe().fields.getMap().get(fieldName);
             if (fld == null) return '❌ Field `' + fieldName + '` not found on `' + objectName + '`.';
-
             List<Schema.PicklistEntry> entries = fld.getDescribe().getPicklistValues();
-            if (entries.isEmpty())
-                return '⚠️ `' + fieldName + '` has no picklist values or is not a picklist field.';
-
-            String result = '## 🎨 Picklist: `' + objectName + '.' + fieldName + '`\n\n'
-                          + '**Total:** ' + entries.size() + ' values\n\n'
-                          + '| Label | API Value | Active | Default |\n|---|---|---|---|\n';
+            if (entries.isEmpty()) return '⚠️ `' + fieldName + '` has no picklist values or is not a picklist.';
+            String r = '## 🎨 Picklist: `' + objectName + '.' + fieldName + '`\n\n**Total:** '
+                     + entries.size() + ' values\n\n| Label | API Value | Active | Default |\n|---|---|---|---|\n';
             for (Schema.PicklistEntry e : entries)
-                result += '| ' + e.getLabel() + ' | `' + e.getValue() + '` | '
-                        + (e.isActive() ? '✅' : '❌') + ' | '
-                        + (e.isDefaultValue() ? '⭐' : '') + ' |\n';
-            return result;
-        } catch (Exception e) {
-            return '❌ Error: ' + e.getMessage();
-        }
+                r += '| ' + e.getLabel() + ' | `' + e.getValue() + '` | '
+                   + (e.isActive() ? '✅' : '❌') + ' | ' + (e.isDefaultValue() ? '⭐' : '') + ' |\n';
+            return r;
+        } catch (Exception e) { return '❌ Error: ' + e.getMessage(); }
     }
 
-    // ── Picklist FIELDS on an object ──────────────────────────────────────────
+    // ── Picklist FIELDS ───────────────────────────────────────────────────────
     private static String getPicklistFields(String prompt) {
         String objectName = extractObjectName(prompt);
         if (String.isBlank(objectName))
@@ -1053,171 +913,127 @@ public with sharing class SfAiAgentController {
         try {
             Schema.SObjectType sot = Schema.getGlobalDescribe().get(objectName);
             if (sot == null) return '❌ Object `' + objectName + '` not found.';
-
             Map<String, Schema.SObjectField> allFields = sot.getDescribe().fields.getMap();
-            List<String> picklistFieldNames = new List<String>();
+            List<String> picklistFns = new List<String>();
             for (String fn : allFields.keySet()) {
                 Schema.DescribeFieldResult dfr = allFields.get(fn).getDescribe();
                 if (dfr.getType() == Schema.DisplayType.PICKLIST ||
-                    dfr.getType() == Schema.DisplayType.MULTIPICKLIST) {
-                    picklistFieldNames.add(fn);
-                }
+                    dfr.getType() == Schema.DisplayType.MULTIPICKLIST)
+                    picklistFns.add(fn);
             }
-            if (picklistFieldNames.isEmpty())
-                return '📋 No picklist fields found on `' + objectName + '`.';
-
-            picklistFieldNames.sort();
-            String result = '## 🎨 Picklist Fields — `' + objectName
-                          + '` (' + picklistFieldNames.size() + ')\n\n'
-                          + '| Field Label | API Name | Type |\n|---|---|---|\n';
-            for (String fn : picklistFieldNames) {
+            if (picklistFns.isEmpty()) return '📋 No picklist fields found on `' + objectName + '`.';
+            picklistFns.sort();
+            String r = '## 🎨 Picklist Fields — `' + objectName + '` (' + picklistFns.size() + ')\n\n'
+                     + '| Field Label | API Name | Type |\n|---|---|---|\n';
+            for (String fn : picklistFns) {
                 Schema.DescribeFieldResult dfr = allFields.get(fn).getDescribe();
-                result += '| ' + dfr.getLabel() + ' | `' + fn + '` | ' + dfr.getType() + ' |\n';
+                r += '| ' + dfr.getLabel() + ' | `' + fn + '` | ' + dfr.getType() + ' |\n';
             }
-            return result;
-        } catch (Exception e) {
-            return '❌ Error: ' + e.getMessage();
-        }
+            return r;
+        } catch (Exception e) { return '❌ Error: ' + e.getMessage(); }
     }
 
-    // ── Custom objects ────────────────────────────────────────────────────────
+    // ── Custom Objects ────────────────────────────────────────────────────────
     private static String listCustomObjects() {
         List<EntityDefinition> objs = [
-            SELECT QualifiedApiName, Label
-            FROM EntityDefinition
-            WHERE QualifiedApiName LIKE '%__c'
-              AND IsDeprecatedAndHidden = false
+            SELECT QualifiedApiName, Label FROM EntityDefinition
+            WHERE QualifiedApiName LIKE '%__c' AND IsDeprecatedAndHidden = false
             ORDER BY QualifiedApiName LIMIT 100
         ];
         if (objs.isEmpty()) return '📋 No custom objects found.';
-        String result = '## 📦 Custom Objects (' + objs.size() + ')\n\n'
-                      + '| Label | API Name |\n|---|---|\n';
-        for (EntityDefinition o : objs)
-            result += '| ' + o.Label + ' | `' + o.QualifiedApiName + '` |\n';
-        return result;
+        String r = '## 📦 Custom Objects (' + objs.size() + ')\n\n| Label | API Name |\n|---|---|\n';
+        for (EntityDefinition o : objs) r += '| ' + o.Label + ' | `' + o.QualifiedApiName + '` |\n';
+        return r;
     }
 
-    // ── Installed packages ────────────────────────────────────────────────────
+    // ── Installed Packages ────────────────────────────────────────────────────
     private static String getInstalledPackages() {
-        List<PackageLicense> pkgs = [
-            SELECT AllowedLicenses, UsedLicenses, ExpirationDate, NamespacePrefix
-            FROM PackageLicense ORDER BY NamespacePrefix
-        ];
+        List<PackageLicense> pkgs = [SELECT AllowedLicenses, UsedLicenses, ExpirationDate, NamespacePrefix FROM PackageLicense ORDER BY NamespacePrefix];
         if (pkgs.isEmpty()) return '📋 No installed managed packages found.';
-        String result = '## 📦 Installed Packages (' + pkgs.size() + ')\n\n'
-                      + '| Namespace | Used | Allowed | Expires |\n|---|---|---|---|\n';
+        String r = '## 📦 Installed Packages (' + pkgs.size() + ')\n\n| Namespace | Used | Allowed | Expires |\n|---|---|---|---|\n';
         for (PackageLicense p : pkgs)
-            result += '| `' + p.NamespacePrefix + '` | ' + p.UsedLicenses
-                    + ' | ' + p.AllowedLicenses + ' | '
-                    + (p.ExpirationDate != null ? String.valueOf(p.ExpirationDate) : 'Never') + ' |\n';
-        return result;
+            r += '| `' + p.NamespacePrefix + '` | ' + p.UsedLicenses + ' | ' + p.AllowedLicenses
+               + ' | ' + (p.ExpirationDate != null ? String.valueOf(p.ExpirationDate) : 'Never') + ' |\n';
+        return r;
     }
 
-    // ── Validation rules ──────────────────────────────────────────────────────
+    // ── Validation Rules ──────────────────────────────────────────────────────
     private static String getValidationRules(String prompt) {
         String objectName = extractObjectName(prompt);
-
-        String toolingQuery = 'SELECT Id, ValidationName, Active, ErrorMessage, '
-                            + 'EntityDefinition.QualifiedApiName\n'
-                            + 'FROM ValidationRule\n'
-                            + (String.isNotBlank(objectName)
-                               ? 'WHERE EntityDefinition.QualifiedApiName = \'' + objectName + '\'\n'
-                               : '')
-                            + 'ORDER BY ValidationName';
-
-        return '## ✅ Validation Rules'
-             + (String.isNotBlank(objectName) ? ' — `' + objectName + '`' : '') + '\n\n'
-             + '> ⚠️ **Validation Rules require Tooling API** — not queryable via standard Apex SOQL.\n\n'
-             + '### How to view them\n\n'
-             + '**Option 1 — Setup UI:**\n'
-             + 'Setup → Object Manager → **'
-             + (String.isNotBlank(objectName) ? objectName : 'Your Object')
-             + '** → Validation Rules\n\n'
-             + '**Option 2 — Developer Console:**\n\n'
-             + '1. Open Developer Console → Query Editor tab\n'
-             + '2. ✅ Check **"Use Tooling API"**\n'
-             + '3. Run:\n\n'
-             + '```soql\n' + toolingQuery + '\n```';
+        String q = 'SELECT Id, ValidationName, Active, ErrorMessage, EntityDefinition.QualifiedApiName\n'
+                 + 'FROM ValidationRule\n'
+                 + (String.isNotBlank(objectName) ? 'WHERE EntityDefinition.QualifiedApiName = \'' + objectName + '\'\n' : '')
+                 + 'ORDER BY ValidationName';
+        return '## ✅ Validation Rules' + (String.isNotBlank(objectName) ? ' — `' + objectName + '`' : '') + '\n\n'
+             + '> ⚠️ **Validation Rules require Tooling API** — not queryable via standard SOQL.\n\n'
+             + '**Option 1 — Setup UI:** Setup → Object Manager → **'
+             + (String.isNotBlank(objectName) ? objectName : 'Your Object') + '** → Validation Rules\n\n'
+             + '**Option 2 — Developer Console:**\n1. Open Developer Console → Query Editor\n'
+             + '2. ✅ Check **"Use Tooling API"**\n3. Run:\n\n```soql\n' + q + '\n```\n\n'
+             + '**Option 3 — REST API:**\n```\nGET /services/data/v59.0/tooling/query/?q='
+             + EncodingUtil.urlEncode(q.replaceAll('\n', ' '), 'UTF-8') + '\n```';
     }
 
-    // ── Record types (list) ───────────────────────────────────────────────────
+    // ── Record Types (list) ───────────────────────────────────────────────────
     private static String getRecordTypes(String prompt) {
         String objectName = extractObjectName(prompt);
         String soql = 'SELECT Id, Name, DeveloperName, SobjectType, IsActive FROM RecordType';
         if (String.isNotBlank(objectName))
             soql += ' WHERE SobjectType = \'' + String.escapeSingleQuotes(objectName) + '\'';
         soql += ' ORDER BY SobjectType, Name LIMIT 100';
-
         List<RecordType> rts = Database.query(soql);
         if (rts.isEmpty())
-            return '📋 No record types found'
-                 + (String.isNotBlank(objectName) ? ' for `' + objectName + '`' : '') + '.';
-
-        String result = '## 📋 Record Types (' + rts.size() + ')\n\n'
-                      + '| Name | API Name | Object | Active |\n|---|---|---|---|\n';
+            return '📋 No record types found' + (String.isNotBlank(objectName) ? ' for `' + objectName + '`' : '') + '.';
+        String r = '## 📋 Record Types (' + rts.size() + ')\n\n| Name | API Name | Object | Active |\n|---|---|---|---|\n';
         for (RecordType rt : rts)
-            result += '| **' + rt.Name + '** | `' + rt.DeveloperName + '` | '
-                    + rt.SobjectType + ' | ' + (rt.IsActive ? '✅' : '❌') + ' |\n';
-        return result;
+            r += '| **' + rt.Name + '** | `' + rt.DeveloperName + '` | ' + rt.SobjectType + ' | ' + (rt.IsActive ? '✅' : '❌') + ' |\n';
+        return r;
     }
 
-    // ── Record Type (single detail) ───────────────────────────────────────────
+    // ── Record Type (detail) ──────────────────────────────────────────────────
     private static String getRecordTypeDetail(String prompt) {
         try {
             String searchName = extractQuotedOrKeywordValue(prompt);
             String objectName = extractObjectName(prompt);
-
             if (String.isBlank(searchName) && String.isBlank(objectName))
                 return '❌ Please specify a record type name.\nExample: "Show details of record type Retail for Account"';
-
-            String soql = 'SELECT Id, Name, DeveloperName, SobjectType, IsActive, '
-                        + 'Description, CreatedDate, LastModifiedDate, '
-                        + 'CreatedBy.Name, LastModifiedBy.Name '
-                        + 'FROM RecordType WHERE ';
 
             List<String> conditions = new List<String>();
             if (String.isNotBlank(searchName)) {
                 conditions.add('(Name LIKE \'%' + String.escapeSingleQuotes(searchName) + '%\' '
                              + 'OR DeveloperName LIKE \'%' + String.escapeSingleQuotes(searchName) + '%\')');
             }
-            if (String.isNotBlank(objectName)) {
+            if (String.isNotBlank(objectName))
                 conditions.add('SobjectType = \'' + String.escapeSingleQuotes(objectName) + '\'');
-            }
-            soql += String.join(conditions, ' AND ') + ' ORDER BY Name LIMIT 5';
 
+            String soql = 'SELECT Id, Name, DeveloperName, SobjectType, IsActive, Description, '
+                        + 'CreatedDate, LastModifiedDate, CreatedBy.Name, LastModifiedBy.Name '
+                        + 'FROM RecordType WHERE ' + String.join(conditions, ' AND ') + ' ORDER BY Name LIMIT 5';
             List<RecordType> results = Database.query(soql);
 
             if (results.isEmpty())
-                return '❌ No record type found matching your criteria.\n\n'
-                     + 'Try: "Show all record types" or "Show record types for Account"';
+                return '❌ No record type found matching your criteria.\n\nTry: "Show all record types" or "Show record types for Account"';
+            if (results.size() == 1) return formatRecordTypeDetail(results[0]);
 
-            if (results.size() > 1) {
-                String table = '## 📋 Multiple Matches\n\n'
-                             + '| Name | API Name | Object | Active |\n|---|---|---|---|\n';
-                for (RecordType rt : results)
-                    table += '| **' + rt.Name + '** | `' + rt.DeveloperName + '` | '
-                           + rt.SobjectType + ' | ' + (rt.IsActive ? '✅' : '❌') + ' |\n';
-                table += '\n> Be more specific, e.g. "details of record type ' + results[0].Name + '"';
-                return table;
-            }
+            String t = '## 📋 Multiple Matches\n\n| Name | API Name | Object | Active |\n|---|---|---|---|\n';
+            for (RecordType rt : results)
+                t += '| **' + rt.Name + '** | `' + rt.DeveloperName + '` | ' + rt.SobjectType + ' | ' + (rt.IsActive ? '✅' : '❌') + ' |\n';
+            return t + '\n> Be more specific, e.g. "details of record type ' + results[0].Name + '"';
+        } catch (Exception e) { return '❌ Error: ' + e.getMessage(); }
+    }
 
-            RecordType rt = results[0];
-            return '## 📋 Record Type Detail\n\n'
-                 + '| Field | Value |\n|---|---|\n'
-                 + '| **Name** | '             + rt.Name + ' |\n'
-                 + '| **API Name** | `'         + rt.DeveloperName + '` |\n'
-                 + '| **Object** | '           + rt.SobjectType + ' |\n'
-                 + '| **Active** | '           + (rt.IsActive ? '✅ Yes' : '❌ No') + ' |\n'
-                 + '| **Description** | '      + (String.isNotBlank(rt.Description) ? rt.Description : '—') + ' |\n'
-                 + '| **Created Date** | '     + String.valueOf(rt.CreatedDate).substring(0,10) + ' |\n'
-                 + '| **Created By** | '       + (rt.CreatedBy != null ? rt.CreatedBy.Name : '—') + ' |\n'
-                 + '| **Last Modified** | '    + String.valueOf(rt.LastModifiedDate).substring(0,10) + ' |\n'
-                 + '| **Last Modified By** | ' + (rt.LastModifiedBy != null ? rt.LastModifiedBy.Name : '—') + ' |\n'
-                 + '| **Record ID** | `'        + rt.Id + '` |\n';
-
-        } catch (Exception e) {
-            return '❌ Error fetching record type: ' + e.getMessage();
-        }
+    private static String formatRecordTypeDetail(RecordType rt) {
+        return '## 📋 Record Type Detail\n\n| Field | Value |\n|---|---|\n'
+             + '| **Name** | '             + rt.Name + ' |\n'
+             + '| **API Name** | `'          + rt.DeveloperName + '` |\n'
+             + '| **Object** | '            + rt.SobjectType + ' |\n'
+             + '| **Active** | '            + (rt.IsActive ? '✅ Yes' : '❌ No') + ' |\n'
+             + '| **Description** | '       + (String.isNotBlank(rt.Description) ? rt.Description : '—') + ' |\n'
+             + '| **Created Date** | '      + String.valueOf(rt.CreatedDate).substring(0,10) + ' |\n'
+             + '| **Created By** | '        + (rt.CreatedBy != null ? rt.CreatedBy.Name : '—') + ' |\n'
+             + '| **Last Modified** | '     + String.valueOf(rt.LastModifiedDate).substring(0,10) + ' |\n'
+             + '| **Last Modified By** | '  + (rt.LastModifiedBy != null ? rt.LastModifiedBy.Name : '—') + ' |\n'
+             + '| **Record ID** | `'         + rt.Id + '` |\n';
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -1228,78 +1044,55 @@ public with sharing class SfAiAgentController {
         try {
             String lower = query.trim().toLowerCase();
 
-            // Guard: Tooling API objects
+            // Tooling API guard
             for (String toolingObj : TOOLING_ONLY_OBJECTS) {
                 if (lower.contains('from ' + toolingObj)) {
-                    String objDisplay = toolingObj.substring(0,1).toUpperCase() + toolingObj.substring(1);
-                    return '## ⚠️ Tooling API Object Detected\n\n'
-                         + '`' + objDisplay + '` cannot be queried via standard SOQL in Apex.\n\n'
-                         + '**Run in Developer Console:**\n'
-                         + '1. Open Developer Console → Query Editor\n'
-                         + '2. ✅ Check **"Use Tooling API"**\n'
-                         + '3. Paste and run:\n\n'
-                         + '```soql\n' + query + '\n```';
+                    String disp = toolingObj.substring(0,1).toUpperCase() + toolingObj.substring(1);
+                    return '## ⚠️ Tooling API Object\n\n`' + disp + '` cannot be queried via standard SOQL.\n\n'
+                         + '**Run in Developer Console:**\n1. Open Developer Console → Query Editor\n'
+                         + '2. ✅ Check **"Use Tooling API"**\n3. Paste and run:\n\n```soql\n' + query + '\n```';
                 }
             }
 
-            // COUNT query
+            // COUNT
             if (lower.startsWith('select count(')) {
                 Integer total = Database.countQuery(query);
-                return '## 📊 Count Result\n\n```soql\n' + query + '\n```\n\n'
-                     + '**Total Records:** ' + total;
+                return '## 📊 Count Result\n\n```soql\n' + query + '\n```\n\n**Total Records:** ' + total;
             }
 
-            // Detect subquery
+            // Subquery detection
             Boolean hasSubquery = query.indexOf('(') > 0
                 && query.indexOf('(') < query.lastIndexOf(')')
                 && lower.contains('select')
                 && lower.indexOf('select') != lower.lastIndexOf('select');
-
             if (hasSubquery) return executeSubqueryAndFormat(query);
 
-            // Execute
+            // Standard flat query
             List<SObject> records = Database.query(query);
             if (records.isEmpty())
-                return '## 🔍 No Records Found\n\n```soql\n' + query
-                     + '\n```\n\n*No records matched your criteria.*';
+                return '## 🔍 No Records Found\n\n```soql\n' + query + '\n```\n\n*No records matched your criteria.*';
 
             List<String> lines = new List<String>();
             lines.add('## 📋 Query Results\n\n```soql\n' + query + '\n```\n');
             lines.add('**Total: ' + records.size() + ' record(s)**\n');
 
-            Map<String, Object> firstFields = records[0].getPopulatedFieldsAsMap();
-            List<String> fieldNames = new List<String>(firstFields.keySet());
-
+            Map<String, Object> first = records[0].getPopulatedFieldsAsMap();
+            List<String> fns = new List<String>(first.keySet());
             String header = '| '; String sep = '|';
-            for (String fn : fieldNames) { header += fn + ' | '; sep += '---|'; }
+            for (String fn : fns) { header += fn + ' | '; sep += '---|'; }
             lines.add(header); lines.add(sep);
 
-            // Show ALL records — no cap
             for (Integer i = 0; i < records.size(); i++) {
                 String row = '| ';
-                for (String fn : fieldNames)
-                    row += formatFieldValue(records[i].get(fn)) + ' | ';
+                for (String fn : fns) row += formatFieldValue(records[i].get(fn)) + ' | ';
                 lines.add(row);
             }
-
             return String.join(lines, '\n');
 
         } catch (Exception e) {
             String errMsg = e.getMessage() != null ? e.getMessage() : 'Unknown error';
 
-            // Tooling API
-            if (errMsg.contains('is not supported')) {
-                return '## ⚠️ Unsupported Object\n\n'
-                     + '❌ ' + errMsg + '\n\n'
-                     + 'This object requires **Tooling API**.\n\n'
-                     + '**Run in Developer Console:**\n'
-                     + '1. Open Developer Console → Query Editor\n'
-                     + '2. ✅ Check **"Use Tooling API"**\n'
-                     + '3. Run your query\n\n'
-                     + '```soql\n' + query + '\n```';
-            }
-
-            // Invalid field — show valid fields
+            // Invalid field → show valid fields
             if (errMsg.contains('No such column') || errMsg.contains('no such column')) {
                 String objectName = extractObjectNameFromQuery(query);
                 String fieldHelp  = '';
@@ -1310,21 +1103,25 @@ public with sharing class SfAiAgentController {
                             Map<String, Schema.SObjectField> fields = sot.getDescribe().fields.getMap();
                             List<String> fns = new List<String>(fields.keySet());
                             fns.sort();
-                            fieldHelp = '\n\n### ✅ Valid fields on `' + objectName + '`\n\n'
-                                      + '| API Name | Label | Type |\n|---|---|---|\n';
+                            fieldHelp = '\n\n### ✅ Valid fields on `' + objectName + '`\n\n| API Name | Label | Type |\n|---|---|---|\n';
                             for (String fn : fns) {
                                 Schema.DescribeFieldResult f = fields.get(fn).getDescribe();
-                                fieldHelp += '| `' + f.getName() + '` | '
-                                           + f.getLabel() + ' | ' + f.getType() + ' |\n';
+                                fieldHelp += '| `' + f.getName() + '` | ' + f.getLabel() + ' | ' + f.getType() + ' |\n';
                             }
                         }
-                    } catch (Exception descEx) {
-                        fieldHelp = '\n\n*Could not retrieve field list for `' + objectName + '`.*';
-                    }
+                    } catch (Exception de) { fieldHelp = '\n\n*Could not retrieve field list.*'; }
                 }
                 return '## ❌ Invalid Field\n\n' + errMsg + '\n\n'
-                     + '**Fix:** Check the field API name — it may be misspelled or not exist.\n\n'
+                     + '**Fix:** Check the field API name — it may be misspelled or not exist on this object.\n\n'
                      + '```soql\n' + query + '\n```' + fieldHelp;
+            }
+
+            // Tooling API
+            if (errMsg.contains('is not supported')) {
+                return '## ⚠️ Unsupported Object\n\n❌ ' + errMsg + '\n\n'
+                     + 'This object requires **Tooling API**.\n\n'
+                     + '**Run in Developer Console:**\n1. Open Developer Console → Query Editor\n'
+                     + '2. ✅ Check **"Use Tooling API"**\n3. Run:\n\n```soql\n' + query + '\n```';
             }
 
             return '❌ **SOQL Error:** ' + errMsg + '\n\n```soql\n' + query + '\n```';
@@ -1335,50 +1132,44 @@ public with sharing class SfAiAgentController {
         try {
             List<SObject> parentRecords = Database.query(query);
             if (parentRecords.isEmpty())
-                return '## 🔍 No Records Found\n\n```soql\n' + query
-                     + '\n```\n\n*No parent records matched.*';
+                return '## 🔍 No Records Found\n\n```soql\n' + query + '\n```\n\n*No parent records matched.*';
 
             List<String> lines = new List<String>();
             lines.add('## 📋 Query Results\n\n```soql\n' + query + '\n```\n');
             lines.add('**' + parentRecords.size() + ' parent record(s) found**\n');
 
             for (SObject parent : parentRecords) {
-                Map<String, Object> parentFieldMap = parent.getPopulatedFieldsAsMap();
+                Map<String, Object> pfm = parent.getPopulatedFieldsAsMap();
                 String parentRow = '';
-                for (String fn : parentFieldMap.keySet()) {
+                for (String fn : pfm.keySet()) {
                     if (fn == 'attributes') continue;
                     try {
-                        if (parentFieldMap.get(fn) instanceof List<SObject>) continue;
-                        parentRow += '**' + fn + ':** `'
-                                  + formatFieldValue(parentFieldMap.get(fn)) + '`   ';
+                        if (pfm.get(fn) instanceof List<SObject>) continue;
+                        parentRow += '**' + fn + ':** `' + formatFieldValue(pfm.get(fn)) + '`   ';
                     } catch (Exception skip) { continue; }
                 }
                 lines.add('### 🔹 ' + parentRow.trim());
 
-                for (String fn : parentFieldMap.keySet()) {
-                    Object rawVal = parentFieldMap.get(fn);
+                for (String fn : pfm.keySet()) {
+                    Object rawVal = pfm.get(fn);
                     if (!(rawVal instanceof List<SObject>)) continue;
-
                     List<SObject> children = (List<SObject>) rawVal;
                     lines.add('\n**↳ ' + fn + '** — ' + children.size() + ' child record(s)\n');
-
                     if (children.isEmpty()) { lines.add('*No child records found.*\n'); continue; }
 
-                    Set<String> childFieldSet = children[0].getPopulatedFieldsAsMap().keySet();
-                    List<String> childFields  = new List<String>();
-                    for (String cf : childFieldSet) {
+                    Set<String> cfs = children[0].getPopulatedFieldsAsMap().keySet();
+                    List<String> childFields = new List<String>();
+                    for (String cf : cfs) {
                         if (cf == 'attributes') continue;
-                        try { Object probe = children[0].get(cf); childFields.add(cf); }
+                        try { Object p = children[0].get(cf); childFields.add(cf); }
                         catch (SObjectException ex) { }
                     }
-
                     if (childFields.isEmpty()) { lines.add('*Could not read child fields.*\n'); continue; }
 
                     String hdr = '| '; String sep = '|';
                     for (String cf : childFields) { hdr += cf + ' | '; sep += '---|'; }
                     lines.add(hdr); lines.add(sep);
 
-                    // Show ALL child records — no cap
                     for (Integer i = 0; i < children.size(); i++) {
                         String row = '| ';
                         for (String cf : childFields) {
@@ -1394,7 +1185,6 @@ public with sharing class SfAiAgentController {
                 lines.add('\n---\n');
             }
             return String.join(lines, '\n');
-
         } catch (Exception e) {
             return '❌ **Subquery Error:** ' + e.getMessage()
                  + '\n\n```soql\n' + query + '\n```\n\n'
@@ -1407,16 +1197,13 @@ public with sharing class SfAiAgentController {
     // ══════════════════════════════════════════════════════════════════════════
 
     private static String generateSoqlQuery(String prompt) {
-        String sp = 'You are a Salesforce SOQL generator for standard Apex Database.query().\n'
-                  + 'RULES:\n'
-                  + '1. Only generate queries for standard queryable SObjects.\n'
-                  + '2. NEVER generate queries for Tooling API objects such as: '
-                  + 'ValidationRule, WorkflowRule, CustomField, CustomObject, '
-                  + 'ApexTriggerMetadata, LayoutAssignment, ProfileLayout.\n'
-                  + '3. If user asks for a Tooling API object, reply: NO_QUERY\n'
-                  + '4. If user asks for real Salesforce data from a standard object, '
-                  + 'reply ONLY with a valid SOQL SELECT query. No explanation, no fences.\n'
-                  + '5. Otherwise reply: NO_QUERY';
+        String sp = 'You are a Salesforce SOQL generator for STANDARD Apex Database.query(). '
+                  + 'RULES: Only generate queries for standard queryable SObjects. '
+                  + 'NEVER generate queries for Tooling API objects such as: '
+                  + 'ValidationRule, WorkflowRule, CustomField, CustomObject, ApexTriggerMetadata. '
+                  + 'If user asks for Tooling API objects, reply with exactly: NO_QUERY. '
+                  + 'If asking for real Salesforce data, reply ONLY with a valid SOQL SELECT query — '
+                  + 'no explanation, no fences, no preamble. Otherwise reply: NO_QUERY';
         return stripCodeFences(callOpenAI(sp, prompt, 400, 0.0)).trim();
     }
 
@@ -1446,20 +1233,15 @@ public with sharing class SfAiAgentController {
 
         HttpResponse res = new Http().send(req);
         if (res.getStatusCode() != 200)
-            throw new AuraHandledException(
-                'OpenAI error (' + res.getStatusCode() + '): ' + res.getBody());
+            throw new AuraHandledException('OpenAI error (' + res.getStatusCode() + '): ' + res.getBody());
 
-        Map<String, Object> resp =
-            (Map<String, Object>) JSON.deserializeUntyped(res.getBody());
+        Map<String, Object> resp = (Map<String, Object>) JSON.deserializeUntyped(res.getBody());
         List<Object> choices = (List<Object>) resp.get('choices');
         if (choices == null || choices.isEmpty())
             throw new AuraHandledException('No choices returned from OpenAI.');
 
-        Map<String, Object> msg =
-            (Map<String, Object>) ((Map<String, Object>) choices[0]).get('message');
-        if (msg == null)
-            throw new AuraHandledException('Null message block in OpenAI response.');
-
+        Map<String, Object> msg = (Map<String, Object>) ((Map<String, Object>) choices[0]).get('message');
+        if (msg == null) throw new AuraHandledException('Null message from OpenAI.');
         return (String) msg.get('content');
     }
 
@@ -1468,13 +1250,13 @@ public with sharing class SfAiAgentController {
     // ══════════════════════════════════════════════════════════════════════════
 
     private static Boolean containsObjectName(String lp) {
-        return lp.contains('account')     || lp.contains('contact')     ||
-               lp.contains('opportunity') || lp.contains('lead')        ||
-               lp.contains('case')        || lp.contains('task')        ||
-               lp.contains('event')       || lp.contains('user')        ||
-               lp.contains('contract')    || lp.contains('order')       ||
-               lp.contains('product')     || lp.contains('asset')       ||
-               lp.contains('campaign')    || lp.contains('quote')       ||
+        return lp.contains('account')     || lp.contains('contact')      ||
+               lp.contains('opportunity') || lp.contains('lead')         ||
+               lp.contains('case')        || lp.contains('task')         ||
+               lp.contains('event')       || lp.contains('user')         ||
+               lp.contains('contract')    || lp.contains('order')        ||
+               lp.contains('product')     || lp.contains('asset')        ||
+               lp.contains('campaign')    || lp.contains('quote')        ||
                lp.contains('__c');
     }
 
@@ -1485,12 +1267,78 @@ public with sharing class SfAiAgentController {
             'user','contract','order','product2','asset','campaign','quote','pricebook2'
         };
         for (String o : stdObjects)
-            if (lp.contains(o))
-                return o.substring(0,1).toUpperCase() + o.substring(1);
-
+            if (lp.contains(o)) return o.substring(0,1).toUpperCase() + o.substring(1);
         Pattern p = Pattern.compile('\\b([A-Za-z][A-Za-z0-9_]*__c)\\b');
         Matcher m = p.matcher(prompt);
         if (m.find()) return m.group(1);
+        return null;
+    }
+
+    private static String extractFieldName(String prompt) {
+        Pattern dotPat = Pattern.compile('[A-Za-z][A-Za-z0-9_]*\\.([A-Za-z][A-Za-z0-9_]*(?:__c)?)');
+        Matcher dotM = dotPat.matcher(prompt);
+        if (dotM.find()) return dotM.group(1);
+        String lp = prompt.toLowerCase();
+        for (String kw : new List<String>{'for field ','field ','picklist ','of field ','values of ','values for '}) {
+            Integer idx = lp.indexOf(kw);
+            if (idx >= 0) {
+                String rest = prompt.substring(idx + kw.length()).trim().split(' ')[0].replaceAll('[^A-Za-z0-9_]','');
+                if (String.isNotBlank(rest)) return rest;
+            }
+        }
+        return null;
+    }
+
+    private static String extractQuotedOrKeywordValue(String prompt) {
+        // Step 1 — Quoted value wins always
+        Pattern quoted = Pattern.compile('["\']([^"\']+)["\']');
+        Matcher qm = quoted.matcher(prompt);
+        if (qm.find()) return qm.group(1).trim();
+
+        // Step 2 — Specific multi-word keyword phrases (safe to take full remainder)
+        String lp = prompt.toLowerCase();
+        List<String> specificKeywords = new List<String>{
+            'name equals ','name = ','whose name is ','whose name ',
+            'named ','called ','label equals ','label = ',
+            'full detail of ','full details of ',
+            'detail of ','details of ','detail for ','details for ',
+            'information about ','info about ','info on ',
+            'tell me about ','having name '
+        };
+        for (String kw : specificKeywords) {
+            Integer idx = lp.indexOf(kw);
+            if (idx >= 0) {
+                String remainder = prompt.substring(idx + kw.length()).trim()
+                                         .replaceAll('[?!.]$','').trim();
+                if (String.isNotBlank(remainder)) return remainder;
+            }
+        }
+
+        // Step 3 — Generic single-word keywords (take first CamelCase/underscore token)
+        List<String> genericKeywords = new List<String>{
+            'apex class ','apex classes ',
+            'permission set group ','permission set ',
+            'user role ','profile ','flow ','user ',
+            'class ','group ','set ','role '
+        };
+        for (String kw : genericKeywords) {
+            Integer idx = lp.indexOf(kw);
+            if (idx >= 0) {
+                String remainder = prompt.substring(idx + kw.length()).trim()
+                                         .replaceAll('[?!.]$','').trim();
+                if (String.isNotBlank(remainder)) {
+                    // No spaces → clean single name
+                    if (!remainder.contains(' ')) return remainder;
+                    // First word looks like a name (CamelCase or has underscore)
+                    String firstWord = remainder.split('\\s+')[0];
+                    if (firstWord.length() > 2 &&
+                        (Pattern.matches('[A-Z]', firstWord.substring(0, 1)) || firstWord.contains('_'))) {
+                        return firstWord;
+                    }
+                    return remainder;
+                }
+            }
+        }
         return null;
     }
 
@@ -1506,58 +1354,7 @@ public with sharing class SfAiAgentController {
                 String cap = objName.substring(0,1).toUpperCase() + objName.substring(1);
                 if (gd.containsKey(cap)) return cap;
             }
-        } catch (Exception e) {
-            System.debug('extractObjectNameFromQuery: ' + e.getMessage());
-        }
-        return null;
-    }
-
-    private static String extractFieldName(String prompt) {
-        Pattern dotPat = Pattern.compile(
-            '[A-Za-z][A-Za-z0-9_]*\\.([A-Za-z][A-Za-z0-9_]*(?:__c)?)');
-        Matcher dotM = dotPat.matcher(prompt);
-        if (dotM.find()) return dotM.group(1);
-
-        String lp = prompt.toLowerCase();
-        for (String kw : new List<String>{
-            'for field ','field ','picklist ','of field ','values of ','values for '
-        }) {
-            Integer idx = lp.indexOf(kw);
-            if (idx >= 0) {
-                String rest = prompt.substring(idx + kw.length()).trim()
-                                    .split(' ')[0].replaceAll('[^A-Za-z0-9_]','');
-                if (String.isNotBlank(rest)) return rest;
-            }
-        }
-        return null;
-    }
-
-    private static String extractQuotedOrKeywordValue(String prompt) {
-        // Quoted value first
-        Pattern quoted = Pattern.compile('["\']([^"\']+)["\']');
-        Matcher qm = quoted.matcher(prompt);
-        if (qm.find()) return qm.group(1).trim();
-
-        // Keyword patterns
-        String lp = prompt.toLowerCase();
-        List<String> keywords = new List<String>{
-            'name equals ','name = ','named ','called ',
-            'label equals ','label = ','whose name is ','whose name ',
-            'detail of ','details of ','detail for ','details for ',
-            'full detail of ','full details of ',
-            'info on ','info about ','about ',
-            'information about ','tell me about ',
-            'having name ','role ','class ','flow ',
-            'group ','set ','user '
-        };
-        for (String kw : keywords) {
-            Integer idx = lp.indexOf(kw);
-            if (idx >= 0) {
-                String remainder = prompt.substring(idx + kw.length()).trim()
-                                         .replaceAll('[?!.]$','').trim();
-                if (String.isNotBlank(remainder)) return remainder;
-            }
-        }
+        } catch (Exception e) { System.debug('extractObjectNameFromQuery: ' + e.getMessage()); }
         return null;
     }
 
@@ -1565,9 +1362,8 @@ public with sharing class SfAiAgentController {
         if (String.isBlank(q) || q.equalsIgnoreCase('NO_QUERY')) return false;
         String lower = q.trim().toLowerCase();
         if (!lower.startsWith('select ')) return false;
-        for (String bad : new List<String>{
-            ';',' delete ',' insert ',' update ',' upsert ',' merge '
-        }) if (lower.contains(bad)) return false;
+        for (String bad : new List<String>{';',' delete ',' insert ',' update ',' upsert ',' merge '})
+            if (lower.contains(bad)) return false;
         return true;
     }
 
@@ -1593,8 +1389,7 @@ public with sharing class SfAiAgentController {
     private static String getSystemPrompt() {
         return 'You are an expert Salesforce AI Agent. Be concise and production-ready.\n'
              + 'Format ALL code in fenced blocks: ```apex ```soql ```javascript ```html\n'
-             + 'Use Markdown tables for structured data.\n'
-             + '**bold** for key terms. `backticks` for API names.\n'
+             + 'Use Markdown tables for structured data. **bold** for key terms. `backticks` for API names.\n'
              + 'Use bullet points and numbered steps where appropriate.';
     }
 }
